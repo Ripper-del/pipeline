@@ -1,0 +1,6 @@
+pyrofork
+tgcrypto
+Pillow
+python-dotenv
+playwright
+httpx

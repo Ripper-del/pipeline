@@ -13,6 +13,8 @@ services:
     volumes:
       - ./uniqreo/tmp_input:/app/tmp_input
       - ./uniqreo/tmp_output:/app/tmp_output
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # 2. Ubtbot - Telegram Redirect & Follow-up Bot
   tg_redirect_bot:

@@ -173,8 +173,44 @@ async def like_video(page):
     print("    [!] Could not locate like button.")
     return False
 
+async def human_type(page, text):
+    """Simulates realistic human typing with micro-delays, random typos, and backspace corrections."""
+    qwerty_layout = {
+        'a': 'qwsz', 'b': 'vghn', 'c': 'xdfv', 'd': 'ersfxc', 'e': 'wsdr',
+        'f': 'rtgvcd', 'g': 'tyhbvf', 'h': 'yujnbg', 'i': 'ujko', 'j': 'uikmnh',
+        'k': 'ijlm', 'l': 'okp', 'm': 'njk', 'n': 'bhjm', 'o': 'iklp',
+        'p': 'ol', 'q': 'wa', 'r': 'edft', 's': 'wedxza', 't': 'rfgy',
+        'u': 'yhji', 'v': 'cfgb', 'w': 'qase', 'x': 'zsdc', 'y': 'tghu', 'z': 'asx'
+    }
+    for char in text:
+        # 4% chance of making a typo on alphabetic characters
+        if char.lower() in qwerty_layout and random.random() < 0.04:
+            wrong_char = random.choice(qwerty_layout[char.lower()])
+            if char.isupper():
+                wrong_char = wrong_char.upper()
+                
+            await page.keyboard.type(wrong_char)
+            await asyncio.sleep(random.uniform(0.1, 0.2))
+            
+            # 15% chance of double typo
+            if random.random() < 0.15:
+                extra_wrong = random.choice("abcdefghijklmnopqrstuvwxyz")
+                await page.keyboard.type(extra_wrong)
+                await asyncio.sleep(random.uniform(0.1, 0.2))
+                await asyncio.sleep(random.uniform(0.2, 0.35))
+                await page.keyboard.press("Backspace")
+                await asyncio.sleep(random.uniform(0.08, 0.15))
+                await page.keyboard.press("Backspace")
+            else:
+                await asyncio.sleep(random.uniform(0.2, 0.3))
+                await page.keyboard.press("Backspace")
+            await asyncio.sleep(random.uniform(0.1, 0.2))
+            
+        await page.keyboard.type(char)
+        await asyncio.sleep(random.uniform(0.05, 0.12))
+
 async def post_comment(page, text):
-    """Enters comment text and publishes it to the post."""
+    """Enters comment text using human typing simulation and publishes it to the post."""
     input_selectors = [
         "[data-e2e='comment-input']",
         "div[contenteditable='true']",
@@ -187,8 +223,8 @@ async def post_comment(page, text):
             comment_box = page.locator(sel).first
             if await comment_box.is_visible(timeout=3000):
                 await comment_box.click()
-                # Type comments slowly to bypass robotic signature triggers
-                await page.keyboard.type(text, delay=random.randint(60, 140))
+                # Run the realistic human typing simulation
+                await human_type(page, text)
                 input_found = True
                 break
         except Exception:
@@ -235,13 +271,39 @@ async def get_video_description(page):
             continue
     return ""
 
+async def send_telegram_notification(text, thread_id):
+    """Sends status log messages directly to specified Telegram threads."""
+    bot_token = os.getenv("REDIRECT_BOT_TOKEN") or os.getenv("BOT_TOKEN")
+    chat_id = os.getenv("LOG_CHAT_ID") or os.getenv("LEAD_CHAT_ID")
+    if not bot_token or not chat_id or not thread_id:
+        return
+        
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "message_thread_id": int(thread_id),
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[!] Failed to send Telegram log: {e}")
+
 async def run_automation(mode, profile_id, geo, limit, api_url, headless):
     geo_data = GEO_DATABASE.get(geo)
     if not geo_data:
         print(f"[!] Invalid GEO: {geo}")
         sys.exit(1)
         
+    # Resolve target thread for logs
+    thread_id = os.getenv("WARMUP_THREAD_ID") if mode == "warmup" else os.getenv("SPY_THREAD_ID")
+        
+    log_text = f"🤖 <b>[TikTok Automator]</b>\nЗапущен режим: <code>{mode}</code>\nГЕО: <code>{geo}</code>\nПрофиль AdsPower: <code>{profile_id or 'Local'}</code>"
     print(f"[*] Starting automator in '{mode}' mode. GEO: '{geo}' (Lang: '{geo_data['lang']}')")
+    if thread_id:
+        await send_telegram_notification(log_text, thread_id)
     
     ws_endpoint = None
     if profile_id:
@@ -335,6 +397,8 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                     if is_relevant:
                         matching_count += 1
                         print(f"    [+] Video identified as relevant ({matching_count} total).")
+                        if thread_id:
+                            await send_telegram_notification(f"🎯 <b>Найдено целевое видео:</b> {video_url}\n📝 Описание: {desc[:150]}...", thread_id)
                         
                         # Human-like watch simulation (retention warm-up)
                         watch_time = random.randint(6, 15)
@@ -354,13 +418,17 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                                 
                         if should_interact:
                             # 1. Like
-                            await like_video(page)
+                            liked = await like_video(page)
                             await page.wait_for_timeout(random.randint(1000, 2000))
                             
                             # 2. Comment
                             comment_text = random.choice(geo_data["comments"])
-                            await post_comment(page, comment_text)
+                            commented = await post_comment(page, comment_text)
                             await page.wait_for_timeout(random.randint(2000, 4000))
+                            
+                            if thread_id:
+                                interaction_status = f"✅ <b>Взаимодействие:</b> {video_url}\n👀 Удержание: {watch_time} сек\n❤️ Лайк: {'ок' if liked else 'не найден'}\n💬 Коммент: \"{comment_text}\""
+                                await send_telegram_notification(interaction_status, thread_id)
                             
                     else:
                         print("    [-] Video is not relevant. Skipping.")
@@ -378,6 +446,8 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                     await page.wait_for_timeout(2000)
                     
         print("[*] Automation run finished.")
+        if thread_id:
+            await send_telegram_notification(f"⏹️ <b>Автоматизация завершена.</b>\nРежим: <code>{mode}</code>\nОбработано видео: <code>{processed_videos}</code>\nЦелевых совпадений: <code>{matching_count}</code>", thread_id)
         if ws_endpoint:
             await browser.close()
             # Stop the AdsPower profile via Local API
