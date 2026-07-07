@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environments and IDEs
+.env
+.venv
+env/
+venv/
+ENV/
+.idea/
+.vscode/
+
+# Project-specific paths
+tmp_input/
+tmp_output/
+uniqreo/tmp_input/
+uniqreo/tmp_output/
+
+# Telegram sessions
+*.session
+*.session-journal
+uniqreo/*.session
+uniqreo/*.session-journal
+ubtbot/*.session
+ubtbot/*.session-journal
+
+# Temporary clone artifacts
+*_temp/

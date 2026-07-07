@@ -1,0 +1,7 @@
+pyrofork
+tgcrypto
+Pillow
+python-dotenv
+fastapi
+uvicorn
+aiohttp
