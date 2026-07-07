@@ -10,79 +10,82 @@ from playwright.async_api import async_playwright
 
 load_dotenv()
 
-# OpenAI Integration (Required)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    print("[!] Error: OPENAI_API_KEY is required in .env for commenting via Neural Network.")
-    sys.exit(1)
-
-try:
-    import openai
-except ImportError:
-    print("[!] Error: 'openai' package is not installed. Please install it (pip install openai).")
-    sys.exit(1)
-
 # Database of 15 Popular GEOs and Languages for Adult Dating Warmup/Spy
 GEO_DATABASE = {
     "US": {
         "lang": "en",
-        "queries": ["dating advice", "relationship tips", "single life", "meet singles", "dating apps", "adult dating humor"]
+        "queries": ["dating advice", "relationship tips", "single life", "meet singles", "dating apps", "adult dating humor"],
+        "comments": ["so true lol", "this is literally me", "need this in my life tbh", "accurate", "why is this so real", "lmao", "facts"]
     },
     "UK": {
         "lang": "en",
-        "queries": ["uk dating", "london singles", "relationship advice", "single life uk", "dating apps uk"]
+        "queries": ["uk dating", "london singles", "relationship advice", "single life uk", "dating apps uk"],
+        "comments": ["spot on mate", "actually so true", "need this", "lmao", "too real", "bloody accurate", "haha love this"]
     },
     "DE": {
         "lang": "de",
-        "queries": ["dating tipps", "beziehung ratschlag", "singles deutschland", "flirten lernen", "dating app erfahrung"]
+        "queries": ["dating tipps", "beziehung ratschlag", "singles deutschland", "flirten lernen", "dating app erfahrung"],
+        "comments": ["so wahr haha", "das bin ich", "brauche das jetzt", "zu real", "stimmt vollkommen", "echt so", "auf jeden fall"]
     },
     "FR": {
         "lang": "fr",
-        "queries": ["conseils couple", "relation amoureuse", "celibataire paris", "rencontre amoureuse", "drague technique"]
+        "queries": ["conseils couple", "relation amoureuse", "celibataire paris", "rencontre amoureuse", "drague technique"],
+        "comments": ["tellement vrai haha", "c'est trop moi", "j'adore", "c'est exactement ça", "wow c'est tellement réel", "ptdr", "incroyable"]
     },
     "ES": {
         "lang": "es",
-        "queries": ["consejos de pareja", "relaciones amorosas", "solteras en españa", "como ligar", "citas divertidas"]
+        "queries": ["consejos de pareja", "relaciones amorosas", "solteras en españa", "como ligar", "citas divertidas"],
+        "comments": ["jaja tan real", "literalmente yo", "necesito esto en mi vida", "muy cierto", "por qué es tan real esto?", "jajaja", "tal cual"]
     },
     "IT": {
         "lang": "it",
-        "queries": ["consigli coppia", "relazioni sentimentali", "single italia", "come rimorchiare", "incontri online"]
+        "queries": ["consigli coppia", "relazioni sentimentali", "single italia", "come rimorchiare", "incontri online"],
+        "comments": ["troppo vero haha", "sono letteralmente io", "ne ho bisogno nella mia vita", "accurato", "perché è così reale?", "ahahah", "esatto"]
     },
     "BR": {
         "lang": "pt",
-        "queries": ["conselhos de namoro", "relacionamentos", "solteiras brasil", "como paquerar", "aplicativos de namoro"]
+        "queries": ["conselhos de namoro", "relacionamentos", "solteiras brasil", "como paquerar", "aplicativos de namoro"],
+        "comments": ["muito verdade kkkk", "eu todinha", "preciso disso pra ontem", "super real", "por que isso é tão verdade?", "kkkkk", "fato"]
     },
     "NL": {
         "lang": "nl",
-        "queries": ["dating tips", "relatie advies", "singles nederland", "flirten tips", "datingapps nl"]
+        "queries": ["dating tips", "relatie advies", "singles nederland", "flirten tips", "datingapps nl"],
+        "comments": ["zo waar haha", "dit ben ik", "heb dit nodig", "cliché maar waar", "waarom is dit zo herkenbaar?", "lmao", "klopt helemaal"]
     },
     "PL": {
         "lang": "pl",
-        "queries": ["porady randkowe", "związki miłosne", "single polska", "jak flirtować", "aplikacje randkowe"]
+        "queries": ["porady randkowe", "związki miłosne", "single polska", "jak flirtować", "aplikacje randkowe"],
+        "comments": ["takie prawdziwe haha", "to dosłownie ja", "potrzebuję tego w życiu", "mega randka", "dlaczego to jest tak prawdziwe?", "hahaha", "dokładnie"]
     },
     "TR": {
         "lang": "tr",
-        "queries": ["ilişki tavsiyeleri", "flört taktikleri", "sevgili bulma", "yalnızlık komik", "dating uygulamaları"]
+        "queries": ["ilişki tavsiyeleri", "flört taktikleri", "sevgili bulma", "yalnızlık komik", "dating uygulamaları"],
+        "comments": ["çok doğru ya haha", "aynen ben", "buna ihtiyacım var", "çok gerçekçi", "neden bu kadar doğru?", "asdfghjk", "gerçekler"]
     },
     "RO": {
         "lang": "ro",
-        "queries": ["sfaturi relatii", "cupluri amuzante", "single romania", "cum sa agati", "aplicatii de dating"]
+        "queries": ["sfaturi relatii", "cupluri amuzante", "single romania", "cum sa agati", "aplicatii de dating"],
+        "comments": ["atat de adevarat haha", "asta sunt eu", "am nevoie de asta in viata mea", "foarte corect", "de ce e atat de real?", "lmao", "exact"]
     },
     "JP": {
         "lang": "ja",
-        "queries": ["恋愛アドバイス", "カップルの日常", "マッチングアプリあるある", "出会い系", "モテる方法"]
+        "queries": ["恋愛アドバイス", "カップルの日常", "マッチングアプリあるある", "出会い系", "モテる方法"],
+        "comments": ["本当にそれな笑", "私すぎて草", "これ欲しいやつだ", "的確すぎる", "なんでこんなにリアルなの？", "ウケる", "それ"]
     },
     "KR": {
         "lang": "ko",
-        "queries": ["연애 조언", "커플 일상", "소개팅 꿀팁", "데이팅 앱 후기", "썸 타는 법"]
+        "queries": ["연애 조언", "커플 일상", "소개팅 꿀팁", "데이팅 앱 후기", "썸 타는 법"],
+        "comments": ["진짜 인정 ㅋㅋㅋ", "완전 내 얘기네", "내 인생에 이게 필요해", "핵공감", "왜 이렇게 현실적임?", "ㅋㅋㅋ", "맞말"]
     },
     "VN": {
         "lang": "vi",
-        "queries": ["tư vấn tình yêu", "hẹn hò hài hước", "độc thân vui vẻ", "cách tán gái", "ứng dụng hẹn hò"]
+        "queries": ["tư vấn tình yêu", "hẹn hò hài hước", "độc thân vui vẻ", "cách tán gái", "ứng dụng hẹn hò"],
+        "comments": ["thật sự luôn haha", "chuẩn mình luôn", "cần cái này lắm nha", "quá đúng", "sao lại chân thực thế nhỉ?", "kaka", "chính xác"]
     },
     "CA": {
         "lang": "en",
-        "queries": ["canada dating", "toronto singles", "relationship advice", "dating apps canada", "single life canada"]
+        "queries": ["canada dating", "toronto singles", "relationship advice", "dating apps canada", "single life canada"],
+        "comments": ["so true eh", "actually so accurate", "need this tbh", "lmao too real", "why is this so true", "haha love it", "facts"]
     }
 }
 
@@ -124,33 +127,7 @@ async def stop_adspower_profile(api_url, profile_id):
         except Exception as e:
             print(f"[!] Error stopping AdsPower profile: {e}")
 
-async def generate_dynamic_comment(video_desc, lang):
-    """Generates natural comments using OpenAI GPT engine."""
-    if not openai or not OPENAI_API_KEY:
-        return None
-    try:
-        client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
-        system_prompt = (
-            "You are a regular TikTok user writing a short, casual comment on a video. "
-            "The comment must be written in the specified language, be very natural, casual, "
-            "lowercase, without emojis, and sound human-like (short, slangy, like a real person, not a bot). "
-            "Do not write anything else besides the comment itself."
-        )
-        user_prompt = f"Language: {lang}\nVideo description: {video_desc}\nWrite comment:"
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=30,
-            temperature=0.8
-        )
-        comment = response.choices[0].message.content.strip().strip('"').lower()
-        return comment
-    except Exception as e:
-        print(f"    [!] OpenAI GPT call failed: {e}")
-        return None
+
 
 async def math_scroll(page, offset, steps=25, duration=1.5):
     """Human-like scroll simulation using a cubic bezier transition and hand jitter (sine wave)."""
@@ -381,11 +358,8 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                             await page.wait_for_timeout(random.randint(1000, 2000))
                             
                             # 2. Comment
-                            comment_text = await generate_dynamic_comment(desc, geo_data["lang"])
-                            if comment_text:
-                                await post_comment(page, comment_text)
-                            else:
-                                print("    [!] Neural network failed to generate comment. Skipping comment posting.")
+                            comment_text = random.choice(geo_data["comments"])
+                            await post_comment(page, comment_text)
                             await page.wait_for_timeout(random.randint(2000, 4000))
                             
                     else:

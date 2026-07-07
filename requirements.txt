@@ -7,4 +7,3 @@ uvicorn
 aiohttp
 playwright
 httpx
-openai
