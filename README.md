@@ -4,13 +4,14 @@
 
 ## Архитектура проекта
 
-Проект разделен на два основных компонента:
+Проект разделен на три основных компонента:
 
 1. **uniqreo** — Telegram-бот для уникализации фото- и видеоматериалов (на базе Pillow и FFmpeg).
 2. **ubtbot** — Набор сервисов для распределения и дожима трафика:
    - Telegram Redirect Bot — перенаправление пользователей на смартлинк с отслеживанием по Telegram ID.
    - WhatsApp Redirect Bot — аналогичный функционал для WhatsApp на базе Green-API.
    - S2S FastAPI Server — прием постбэков от партнерских программ (например, iMonetizeIt) и отправка уведомлений о конверсиях в Telegram.
+3. **tiktok_scraper** — Консольная утилита для парсинга видео и комментариев в TikTok по ключевым словам.
 
 ## Структура директорий
 
@@ -28,12 +29,15 @@ pipeline/
 │       ├── config.py
 │       ├── photo_processor.py
 │       └── video_processor.py
-└── ubtbot/                  # Компонент распределения трафика
-    ├── bot.py               # Telegram редирект-бот
-    ├── wa_bot.py            # WhatsApp редирект-бот (Green-API)
-    ├── s2s_server.py        # FastAPI сервер для S2S-постбэков
-    ├── requirements.txt     # Локальные зависимости ubtbot
-    └── Dockerfile           # Сборка контейнера ubtbot
+├── ubtbot/                  # Компонент распределения трафика
+│   ├── bot.py               # Telegram редирект-бот
+│   ├── wa_bot.py            # WhatsApp редирект-бот (Green-API)
+│   ├── s2s_server.py        # FastAPI сервер для S2S-постбэков
+│   ├── requirements.txt     # Локальные зависимости ubtbot
+│   └── Dockerfile           # Сборка контейнера ubtbot
+└── tiktok_scraper/          # Компонент парсинга TikTok
+    ├── scraper.py           # Консольный скрипт парсера
+    └── requirements.txt     # Локальные зависимости парсера
 ```
 
 ## Конфигурация окружения (.env)
@@ -102,6 +106,22 @@ docker-compose logs -f [service_name]
      ```bash
      cd ubtbot && uvicorn s2s_server:app --host 0.0.0.0 --port 8000
      ```
+   * Парсер TikTok:
+     Перед первым запуском парсера необходимо установить браузерные бинарные файлы Playwright:
+     ```bash
+     playwright install chromium
+     ```
+     После этого утилиту можно запускать из консоли с параметрами:
+     ```bash
+     python tiktok_scraper/scraper.py -s "crypto" -d "bitcoin,earn" -c "info,interested" -l 10
+     ```
+     Доступные параметры парсера:
+     - `-s` / `--search` (обязательный) — поисковый запрос в TikTok.
+     - `-d` / `--desc-keywords` (необязательный) — ключевые слова (через запятую) для фильтрации описаний видео.
+     - `-c` / `--comment-keywords` (необязательный) — ключевые слова (через запятую) для фильтрации комментариев.
+     - `-l` / `--limit` (по умолчанию 10) — максимальное количество видео для анализа.
+     - `-o` / `--output` (по умолчанию results.json) — путь к файлу результатов.
+     - `--headless` (по умолчанию включен) — запуск браузера с графическим интерфейсом (для дебага).
 
 ## Принципы работы дожим-воронки
 
