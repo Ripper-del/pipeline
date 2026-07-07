@@ -22,7 +22,8 @@ pipeline/
 ├── .env.example             # Шаблон конфигурации окружения
 ├── .gitignore               # Исключения для Git
 ├── uniqreo/                 # Компонент уникализации медиа
-│   ├── bot.py               # Бот уникализации
+│   ├── bot.py               # Бот уникализации с поддержкой автозалива
+│   ├── uploader.py          # Модуль автозалива для запуска в боте
 │   ├── Dockerfile           # Сборка контейнера с установкой FFmpeg
 │   ├── requirements.txt     # Локальные зависимости uniqreo
 │   └── core/                # Логика обработки изображений и видео
@@ -35,9 +36,11 @@ pipeline/
 │   ├── s2s_server.py        # FastAPI сервер для S2S-постбэков
 │   ├── requirements.txt     # Локальные зависимости ubtbot
 │   └── Dockerfile           # Сборка контейнера ubtbot
-└── tiktok_scraper/          # Компонент парсинга TikTok
+└── tiktok_scraper/          # Компонент парсинга и автоматизации TikTok
     ├── scraper.py           # Консольный скрипт парсера
-    └── requirements.txt     # Локальные зависимости парсера
+    ├── automator.py         # Скрипт прогрева и спая через AdsPower
+    ├── uploader.py          # Скрипт автозалива через AdsPower
+    └── requirements.txt     # Локальные зависимости парсера и автоматизатора
 ```
 
 ## Конфигурация окружения (.env)
@@ -51,12 +54,17 @@ cp .env.example .env
 ### Основные параметры:
 * **API_ID** и **API_HASH**: Данные приложения Telegram, полученные на https://my.telegram.org. Исползуются обоими Telegram-ботами.
 * **BOT_TOKEN**: Токен Telegram-бота для уникализации медиа (uniqreo).
-* **SOURCE_THREAD_ID** и **TARGET_THREAD_ID**: ID топиков/чатов для пересылки медиафайлов на уникализацию.
+* **SOURCE_THREAD_ID** и **TARGET_THREAD_ID**: ID топиков/чатов для автоматической пересылки медиафайлов на уникализацию.
 * **REDIRECT_BOT_TOKEN**: Токен Telegram-бота для перенаправления трафика.
 * **SMARTLINK_URL**: Базовая ссылка (смартлинк) для перенаправления.
 * **LEAD_CHAT_ID** и **LEAD_THREAD_ID**: Telegram Chat ID и Thread ID, куда S2S сервер будет отправлять уведомления о новых лидах.
+* **LOG_CHAT_ID**: ID группы Telegram для отправки логов автоматизации (если пустой, используется `LEAD_CHAT_ID`).
+* **WARMUP_THREAD_ID**: Thread ID в группе логов для трансляции прогрева аккаунтов.
+* **SPY_THREAD_ID**: Thread ID в группе логов для отчетов режима спая.
+* **UPLOAD_THREAD_ID**: Thread ID в группе логов для вывода процесса уникализации и автозалива креативов.
 * **GREEN_API_ID_INSTANCE** и **GREEN_API_TOKEN_INSTANCE**: Учетные данные инстанса Green-API для работы WhatsApp-бота.
 * **GREEN_API_URL**: URL-адрес API Green-API (по умолчанию https://api.green-api.com).
+* **ADSPOWER_API_URL**: URL-адрес локального API AdsPower (по умолчанию http://localhost:50325, в Docker контейнере резолвится как http://host.docker.internal:50325).
 
 ## Развертывание и запуск
 
