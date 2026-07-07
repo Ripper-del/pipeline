@@ -111,6 +111,49 @@ async def human_type(page, locator, text):
         await page.keyboard.type(char)
         await asyncio.sleep(random.uniform(0.05, 0.12))
 
+async def check_captcha(page, profile_id):
+    """Detects if a captcha challenge is displayed and blocks execution until resolved by operator."""
+    captcha_selectors = [
+        "iframe[src*='captcha']",
+        "div.captcha_verify_container",
+        ".secsdk-captcha-drag-wrapper",
+        "#tiktok-verify-ele",
+        "[class*='captcha']"
+    ]
+    
+    captcha_found = False
+    for sel in captcha_selectors:
+        try:
+            elem = page.locator(sel).first
+            if await elem.is_visible(timeout=1000):
+                captcha_found = True
+                break
+        except Exception:
+            continue
+            
+    if captcha_found:
+        msg = f"🚨 <b>[CAPTCHA ALERT]</b>\nНа профиле <code>{profile_id}</code> обнаружена капча!\nПожалуйста, решите её вручную в окне браузера."
+        print(f"[!] Captcha detected on profile {profile_id}. Waiting for manual resolution...")
+        await send_telegram_notification(msg)
+        
+        while True:
+            await asyncio.sleep(4)
+            still_has_captcha = False
+            for sel in captcha_selectors:
+                try:
+                    elem = page.locator(sel).first
+                    if await elem.is_visible(timeout=1000):
+                        still_has_captcha = True
+                        break
+                except Exception:
+                    continue
+            if not still_has_captcha:
+                break
+                
+        ok_msg = f"✅ <b>[CAPTCHA RESOLVED]</b>\nКапча на профиле <code>{profile_id}</code> успешно решена. Залив продолжается."
+        print(f"[+] Captcha resolved. Resuming upload.")
+        await send_telegram_notification(ok_msg)
+
 async def run_uploader(video_path, profile_id, caption, api_url, headless):
     if not os.path.exists(video_path):
         err = f"❌ [!] Video file not found: {video_path}"
@@ -142,12 +185,14 @@ async def run_uploader(video_path, profile_id, caption, api_url, headless):
         try:
             await page.goto(upload_url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(5000)
+            await check_captcha(page, profile_id)
         except Exception as e:
             fallback_url = "https://www.tiktok.com/creator-center/upload?lang=en"
             print(f"[!] Studio failed, attempting fallback: {fallback_url} (Error: {e})")
             try:
                 await page.goto(fallback_url, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(5000)
+                await check_captcha(page, profile_id)
             except Exception as fe:
                 err = f"❌ [!] Failed to load TikTok upload pages: {fe}"
                 print(err)
@@ -229,6 +274,7 @@ async def run_uploader(video_path, profile_id, caption, api_url, headless):
                 print("[!] Could not locate description box.")
                 
             # Post the video
+            await check_captcha(page, profile_id)
             print("[*] Clicking Post button...")
             await post_btn.click()
             await page.wait_for_timeout(5000)

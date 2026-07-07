@@ -291,6 +291,51 @@ async def send_telegram_notification(text, thread_id):
     except Exception as e:
         print(f"[!] Failed to send Telegram log: {e}")
 
+async def check_captcha(page, profile_id, thread_id):
+    """Detects if a captcha challenge is displayed and blocks execution until resolved by operator."""
+    captcha_selectors = [
+        "iframe[src*='captcha']",
+        "div.captcha_verify_container",
+        ".secsdk-captcha-drag-wrapper",
+        "#tiktok-verify-ele",
+        "[class*='captcha']"
+    ]
+    
+    captcha_found = False
+    for sel in captcha_selectors:
+        try:
+            elem = page.locator(sel).first
+            if await elem.is_visible(timeout=1000):
+                captcha_found = True
+                break
+        except Exception:
+            continue
+            
+    if captcha_found:
+        msg = f"🚨 <b>[CAPTCHA ALERT]</b>\nНа профиле <code>{profile_id}</code> обнаружена капча!\nПожалуйста, решите её вручную в окне браузера."
+        print(f"[!] Captcha detected on profile {profile_id}. Waiting for manual resolution...")
+        if thread_id:
+            await send_telegram_notification(msg, thread_id)
+            
+        while True:
+            await asyncio.sleep(4)
+            still_has_captcha = False
+            for sel in captcha_selectors:
+                try:
+                    elem = page.locator(sel).first
+                    if await elem.is_visible(timeout=1000):
+                        still_has_captcha = True
+                        break
+                except Exception:
+                    continue
+            if not still_has_captcha:
+                break
+                
+        ok_msg = f"✅ <b>[CAPTCHA RESOLVED]</b>\nКапча на профиле <code>{profile_id}</code> успешно решена. Бот продолжает работу."
+        print(f"[+] Captcha resolved. Resuming automation.")
+        if thread_id:
+            await send_telegram_notification(ok_msg, thread_id)
+
 async def run_automation(mode, profile_id, geo, limit, api_url, headless):
     geo_data = GEO_DATABASE.get(geo)
     if not geo_data:
@@ -353,6 +398,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
             try:
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(3000)
+                await check_captcha(page, profile_id, thread_id)
             except Exception as e:
                 print(f"[!] Error querying keyword '{query}': {e}")
                 continue
@@ -362,6 +408,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 if processed_videos >= limit:
                     break
                     
+                await check_captcha(page, profile_id, thread_id)
                 # Ease-in-out math scroll to load contents
                 print(f"[*] Simulating human scrolling (round {scroll_round + 1}/5)...")
                 await math_scroll(page, offset=random.randint(600, 1000), duration=random.uniform(1.2, 2.0))
@@ -417,6 +464,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                                 print(f"    [+] Spy Trigger! Match count is {matching_count} (every 5th video).")
                                 
                         if should_interact:
+                            await check_captcha(page, profile_id, thread_id)
                             # 1. Like
                             liked = await like_video(page)
                             await page.wait_for_timeout(random.randint(1000, 2000))
