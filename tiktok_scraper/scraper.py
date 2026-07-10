@@ -81,6 +81,14 @@ def extract_comments_from_json(json_data):
             })
     return parsed_comments
 
+def resolve_scrape_target(search, profile):
+    """Determines what to scrape from CLI args: a search query or a profile's videos.
+    Returns (mode, target_url)."""
+    if profile:
+        username = profile.lstrip("@")
+        return "profile", f"https://www.tiktok.com/@{username}"
+    return "search", f"https://www.tiktok.com/search?q={search}"
+
 def dedupe_by_key(items, key):
     """De-duplicates a list of dicts by a given key, keeping first-seen order."""
     seen = {}
@@ -161,8 +169,8 @@ def save_results(output_file, results):
         json.dump(results, f, ensure_ascii=False, indent=2)
     os.replace(tmp_file, output_file)
 
-async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file, headless, resume, proxy):
-    logger.info(f"Starting TikTok Scraper. Search query: '{query}'")
+async def run_scraper(mode, target_url, desc_keywords, comment_keywords, limit, output_file, headless, resume, proxy):
+    logger.info(f"Starting TikTok Scraper. Mode: '{mode}', target: '{target_url}'")
     if desc_keywords:
         logger.info(f"Description filters: {desc_keywords}")
     if comment_keywords:
@@ -200,24 +208,27 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
 
             page = await context.new_page()
 
-            # Storage for video search results intercepted from API
+            # Storage for video results intercepted from API (search results or a profile's posts)
+            item_matcher = (
+                (lambda url: "api/post/item_list/" in url) if mode == "profile"
+                else (lambda url: "api/search/" in url and "full" in url)
+            )
             search_videos = []
             search_listener = make_response_collector(
-                lambda url: "api/search/" in url and "full" in url,
+                item_matcher,
                 extract_videos_from_search_json,
                 search_videos,
-                "search",
+                mode,
             )
             page.on("response", search_listener)
 
-            # Navigate to TikTok search results page
-            search_url = f"https://www.tiktok.com/search?q={query}"
-            logger.info(f"Loading search page: {search_url}")
-            if not await goto_with_retry(page, search_url):
-                logger.error("Could not load search page. Aborting.")
+            # Navigate to the target page (search results or a profile)
+            logger.info(f"Loading page: {target_url}")
+            if not await goto_with_retry(page, target_url):
+                logger.error("Could not load target page. Aborting.")
                 sys.exit(1)
             if not await resolve_captcha_if_present(page, headless):
-                logger.error("Search page blocked by CAPTCHA. Aborting.")
+                logger.error("Target page blocked by CAPTCHA. Aborting.")
                 sys.exit(1)
 
             # Scroll page down several times to load more videos and trigger API requests
@@ -321,7 +332,9 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="TikTok CLI Scraper & Filter Utility")
-    parser.add_argument("--search", "-s", required=True, help="Search query for TikTok videos")
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--search", "-s", help="Search query for TikTok videos")
+    target_group.add_argument("--profile", "-p", help="TikTok username to scrape videos from (without @)")
     parser.add_argument("--desc-keywords", "-d", help="Comma-separated keywords to filter in video descriptions")
     parser.add_argument("--comment-keywords", "-c", help="Comma-separated keywords to filter in comments")
     parser.add_argument("--limit", "-l", type=int, default=10, help="Maximum number of search results to retrieve (default: 10)")
@@ -338,9 +351,12 @@ def main():
     desc_kws = [k.strip() for k in args.desc_keywords.split(",")] if args.desc_keywords else []
     comment_kws = [k.strip() for k in args.comment_keywords.split(",")] if args.comment_keywords else []
 
+    mode, target_url = resolve_scrape_target(args.search, args.profile)
+
     asyncio.run(
         run_scraper(
-            query=args.search,
+            mode=mode,
+            target_url=target_url,
             desc_keywords=desc_kws,
             comment_keywords=comment_kws,
             limit=args.limit,

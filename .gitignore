@@ -50,6 +50,7 @@ uniqreo/tmp_output/
 *.db-journal
 telegram-redirect-bot/data/
 whatsapp-redirect-bot/data/
+s2s-postback-server/data/
 
 # Telegram sessions
 *.session

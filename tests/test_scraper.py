@@ -2,6 +2,24 @@
 import scraper
 
 
+def test_resolve_scrape_target_search_mode():
+    mode, url = scraper.resolve_scrape_target("crypto scam", None)
+    assert mode == "search"
+    assert url == "https://www.tiktok.com/search?q=crypto scam"
+
+
+def test_resolve_scrape_target_profile_mode():
+    mode, url = scraper.resolve_scrape_target(None, "someuser")
+    assert mode == "profile"
+    assert url == "https://www.tiktok.com/@someuser"
+
+
+def test_resolve_scrape_target_profile_mode_strips_at_symbol():
+    mode, url = scraper.resolve_scrape_target(None, "@someuser")
+    assert mode == "profile"
+    assert url == "https://www.tiktok.com/@someuser"
+
+
 def test_extract_videos_from_search_json_basic():
     data = {
         "item_list": [

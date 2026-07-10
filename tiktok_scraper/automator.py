@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+class AutomationError(Exception):
+    """Raised for a single profile's automation failure. Callers running a batch
+    of profiles catch this and move on to the next one instead of the whole
+    process dying (which sys.exit(1) would have done)."""
+    pass
+
 # Database of 15 Popular GEOs and Languages for Adult Dating Warmup/Spy
 GEO_DATABASE = {
     "US": {
@@ -229,8 +235,7 @@ async def check_captcha(page, profile_id, thread_id):
 async def run_automation(mode, profile_id, geo, limit, api_url, headless):
     geo_data = GEO_DATABASE.get(geo)
     if not geo_data:
-        logger.error(f"Invalid GEO: {geo}")
-        sys.exit(1)
+        raise AutomationError(f"Invalid GEO: {geo}")
 
     # Resolve target thread for logs
     thread_id = os.getenv("WARMUP_THREAD_ID") if mode == "warmup" else os.getenv("SPY_THREAD_ID")
@@ -245,8 +250,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
         try:
             ws_endpoint = await get_adspower_ws(api_url, profile_id)
         except Exception as e:
-            logger.error(f"Connection failed: {e}")
-            sys.exit(1)
+            raise AutomationError(f"Connection failed: {e}")
             
     async with async_playwright() as p:
         if ws_endpoint:
@@ -278,8 +282,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(3000)
             except Exception as e:
-                logger.error(f"Error loading TikTok: {e}")
-                sys.exit(1)
+                raise AutomationError(f"Error loading TikTok: {e}")
 
             # Loop through search queries or FYP
             for query in geo_data["queries"]:
@@ -396,33 +399,89 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
             if ws_endpoint:
                 await stop_adspower_profile(api_url, profile_id)
 
+def parse_profile_ids(profile_ids_arg, profile_id_arg, env_profile_ids, env_profile_id):
+    """Resolves the list of AdsPower profile IDs to automate, in priority order:
+    --profile-ids > --profile-id > ADSPOWER_PROFILE_IDS env > ADSPOWER_PROFILE_ID env.
+    Returns [None] (meaning "no AdsPower, use local Chromium") if nothing is set."""
+    if profile_ids_arg:
+        ids = [p.strip() for p in profile_ids_arg.split(",") if p.strip()]
+        return ids or [None]
+    if profile_id_arg:
+        return [profile_id_arg]
+    if env_profile_ids:
+        ids = [p.strip() for p in env_profile_ids.split(",") if p.strip()]
+        return ids or [None]
+    if env_profile_id:
+        return [env_profile_id]
+    return [None]
+
+async def run_automation_for_profiles(mode, profile_ids, geo, limit, api_url, headless, delay_min=30, delay_max=90):
+    """Runs run_automation() for each profile in turn, with a randomized delay
+    between profiles. A single profile's failure doesn't abort the rest of the
+    batch; raises AutomationError only if every profile failed."""
+    failures = 0
+    for idx, profile_id in enumerate(profile_ids):
+        logger.info(f"[{idx+1}/{len(profile_ids)}] Automating profile: {profile_id or 'Local'}")
+        try:
+            await run_automation(mode, profile_id, geo, limit, api_url, headless)
+        except AutomationError as e:
+            failures += 1
+            logger.error(f"Profile {profile_id} failed: {e}")
+        except Exception as e:
+            failures += 1
+            logger.error(f"Unexpected error automating profile {profile_id}: {e}")
+
+        if idx < len(profile_ids) - 1:
+            delay = random.uniform(delay_min, delay_max)
+            logger.info(f"Waiting {delay:.0f}s before next profile...")
+            await asyncio.sleep(delay)
+
+    if failures == len(profile_ids):
+        raise AutomationError(f"All {len(profile_ids)} profile(s) failed")
+    if failures:
+        logger.warning(f"Rotation complete: {len(profile_ids) - failures}/{len(profile_ids)} profiles succeeded")
+    else:
+        logger.info(f"Rotation complete: all {len(profile_ids)} profile(s) succeeded")
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="TikTok AdsPower Automator (Warm-up & Spy Modes)")
     parser.add_argument("--mode", choices=["warmup", "spy"], required=True, help="Automation mode: warmup or spy")
-    parser.add_argument("--profile-id", help="AdsPower profile user_id. If omitted, will check .env's ADSPOWER_PROFILE_ID or run standard Playwright")
+    parser.add_argument("--profile-id", help="Single AdsPower profile user_id. If omitted, will check .env's ADSPOWER_PROFILE_ID or run standard Playwright")
+    parser.add_argument("--profile-ids", help="Comma-separated AdsPower profile IDs to automate one after another (rotation mode). Takes priority over --profile-id")
+    parser.add_argument("--profile-delay-min", type=int, default=30, help="Minimum seconds to wait between profiles in rotation mode (default: 30)")
+    parser.add_argument("--profile-delay-max", type=int, default=90, help="Maximum seconds to wait between profiles in rotation mode (default: 90)")
     parser.add_argument("--geo", default="US", choices=list(GEO_DATABASE.keys()), help="Target country/GEO code (default: US)")
     parser.add_argument("--limit", type=int, default=15, help="Number of videos to inspect/interact with (default: 15)")
     parser.add_argument("--api-url", default="http://localhost:50325", help="AdsPower Local API url (default: http://localhost:50325)")
     parser.add_argument("--headless", action="store_true", help="Launch fallback browser in headless mode (if not using AdsPower)")
-    
+
     args = parser.parse_args()
-    
-    # Resolve profile ID
-    p_id = args.profile_id or os.getenv("ADSPOWER_PROFILE_ID")
-    a_url = args.api_url or os.getenv("ADSPOWER_API_URL", "http://localhost:50325")
-    
-    asyncio.run(
-        run_automation(
-            mode=args.mode,
-            profile_id=p_id,
-            geo=args.geo,
-            limit=args.limit,
-            api_url=a_url,
-            headless=args.headless
-        )
+
+    # Resolve the list of profile(s) to automate
+    profile_ids = parse_profile_ids(
+        args.profile_ids, args.profile_id,
+        os.getenv("ADSPOWER_PROFILE_IDS"), os.getenv("ADSPOWER_PROFILE_ID"),
     )
+    a_url = args.api_url or os.getenv("ADSPOWER_API_URL", "http://localhost:50325")
+
+    try:
+        asyncio.run(
+            run_automation_for_profiles(
+                mode=args.mode,
+                profile_ids=profile_ids,
+                geo=args.geo,
+                limit=args.limit,
+                api_url=a_url,
+                headless=args.headless,
+                delay_min=args.profile_delay_min,
+                delay_max=args.profile_delay_max,
+            )
+        )
+    except AutomationError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

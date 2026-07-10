@@ -52,3 +52,5 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./s2s-postback-server/data:/app/data
