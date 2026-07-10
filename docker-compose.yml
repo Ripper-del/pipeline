@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   # 1. Uniqreo Bot (Telegram media uniqueizer)
   uniqreo_bot:
     build:
-      context: ./uniqreo
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: uniqreo/Dockerfile
     container_name: uniqreo_bot
     restart: unless-stopped
     env_file:
@@ -16,35 +14,39 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # 2. Ubtbot - Telegram Redirect & Follow-up Bot
+  # 2. Telegram Redirect & Follow-up Bot
   tg_redirect_bot:
     build:
-      context: ./ubtbot
+      context: ./telegram-redirect-bot
       dockerfile: Dockerfile
     container_name: tg_redirect_bot
     command: python bot.py
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - ./telegram-redirect-bot/data:/app/data
 
-  # 3. Ubtbot - WhatsApp Redirect & Follow-up Bot
+  # 3. WhatsApp Redirect & Follow-up Bot
   wa_redirect_bot:
     build:
-      context: ./ubtbot
+      context: ./whatsapp-redirect-bot
       dockerfile: Dockerfile
     container_name: wa_redirect_bot
-    command: python wa_bot.py
+    command: python bot.py
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - ./whatsapp-redirect-bot/data:/app/data
 
-  # 4. Ubtbot - FastAPI S2S Postback Receiver
+  # 4. FastAPI S2S Postback Receiver
   s2s_server:
     build:
-      context: ./ubtbot
+      context: ./s2s-postback-server
       dockerfile: Dockerfile
     container_name: s2s_fastapi
-    command: uvicorn s2s_server:app --host 0.0.0.0 --port 8000
+    command: uvicorn server:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     ports:
       - "8000:8000"

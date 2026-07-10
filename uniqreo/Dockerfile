@@ -10,15 +10,19 @@ RUN apt-get update && \
 # рабочая директория
 WORKDIR /app
 
+# общий пакет для TikTok/AdsPower-автоматизации (используется uploader.py),
+# кладём его сюда же, чтобы он резолвился как соседний top-level модуль "common"
+COPY tiktok_scraper/common/ ./common
+
 # установка зависимостей
-COPY requirements.txt .
+COPY uniqreo/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # временные папки для обработки файлов
 RUN mkdir -p /app/tmp_input /app/tmp_output
 
 # копируем весь код проекта в контейнер
-COPY . .
+COPY uniqreo/ .
 
 # команда для запуска бота
 CMD ["python", "bot.py"]

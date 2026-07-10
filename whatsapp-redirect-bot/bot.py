@@ -15,10 +15,12 @@ BASE_SMARTLINK = os.getenv("SMARTLINK_URL")
 if not all([ID_INSTANCE, API_TOKEN, BASE_SMARTLINK]):
     raise ValueError("ERROR: GREEN_API_ID_INSTANCE, GREEN_API_TOKEN_INSTANCE, and SMARTLINK_URL must be set in .env")
 
-DB_FILE = "followups.db"
+DB_DIR = os.getenv("DATA_DIR", "data")
+DB_FILE = os.path.join(DB_DIR, "followups.db")
 
 def init_db():
     """Initializes SQLite database schema for storing scheduled follow-up messages."""
+    os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
@@ -77,6 +79,15 @@ def update_followup_status(followup_id, status):
     c.execute("UPDATE followups SET status = ? WHERE id = ?", (status, followup_id))
     conn.commit()
     conn.close()
+
+def has_been_contacted(chat_id):
+    """Checks whether this chat already received the welcome message in a previous run."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT count(*) FROM followups WHERE chat_id = ?", (chat_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count > 0
 
 async def send_whatsapp_message(session: aiohttp.ClientSession, chat_id: str, text: str) -> bool:
     """Send a message to a specific WhatsApp chat using Green API's sendMessage endpoint."""
@@ -150,10 +161,15 @@ async def handle_notification(session: aiohttp.ClientSession, notification: dict
     
     if not chat_id or not chat_id.endswith("@c.us"):
         return  # Only respond to private chats
-        
+
+    if await asyncio.to_thread(has_been_contacted, chat_id):
+        # Welcome + follow-up funnel was already sent to this chat in a previous message;
+        # avoid re-sending it on every subsequent reply the user sends.
+        return
+
     wa_id = chat_id.split("@")[0]
     personal_link = f"{BASE_SMARTLINK}{wa_id}"
-    
+
     welcome_text = (
         "🤫 The video you're looking for is inside...\n\n"
         "To bypass age restrictions and watch the full uncensored version, "

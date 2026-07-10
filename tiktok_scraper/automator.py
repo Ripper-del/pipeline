@@ -4,9 +4,13 @@ import random
 import math
 import argparse
 import sys
-import httpx
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
+from common.adspower import get_adspower_ws, stop_adspower_profile
+from common.captcha import wait_for_captcha_resolution
+from common.human_input import type_like_human
+from common.telegram_notify import send_telegram_message
 
 load_dotenv()
 
@@ -89,46 +93,6 @@ GEO_DATABASE = {
     }
 }
 
-async def get_adspower_ws(api_url, profile_id):
-    """Launches AdsPower profile and extracts Playwright WebSocket endpoint."""
-    url = f"{api_url.rstrip('/')}/api/v1/browser/start?user_id={profile_id}"
-    print(f"[*] Connecting to AdsPower profile via Local API: {url}")
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(url, timeout=30)
-            if resp.status_code == 200:
-                resp_json = resp.json()
-                if resp_json.get("code") == 0:
-                    ws_data = resp_json.get("data", {}).get("ws", {})
-                    ws_url = ws_data.get("playwright") or ws_data.get("puppeteer")
-                    if ws_url:
-                        return ws_url
-                    else:
-                        raise Exception("WebSocket connection details missing in AdsPower API response.")
-                else:
-                    raise Exception(f"AdsPower returned error: {resp_json.get('msg')}")
-            else:
-                raise Exception(f"Failed HTTP response: {resp.status_code} - {resp.text}")
-        except Exception as e:
-            print(f"[!] Error starting AdsPower browser: {e}")
-            raise e
-
-async def stop_adspower_profile(api_url, profile_id):
-    """Stops the specified AdsPower browser profile."""
-    url = f"{api_url.rstrip('/')}/api/v1/browser/stop?user_id={profile_id}"
-    print(f"[*] Stopping AdsPower profile: {profile_id}")
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(url, timeout=30)
-            if resp.status_code == 200:
-                print("[+] Profile closed successfully.")
-            else:
-                print(f"[!] AdsPower responded with status {resp.status_code}")
-        except Exception as e:
-            print(f"[!] Error stopping AdsPower profile: {e}")
-
-
-
 async def math_scroll(page, offset, steps=25, duration=1.5):
     """Human-like scroll simulation using a cubic bezier transition and hand jitter (sine wave)."""
     step_delay = duration / steps
@@ -173,42 +137,6 @@ async def like_video(page):
     print("    [!] Could not locate like button.")
     return False
 
-async def human_type(page, text):
-    """Simulates realistic human typing with micro-delays, random typos, and backspace corrections."""
-    qwerty_layout = {
-        'a': 'qwsz', 'b': 'vghn', 'c': 'xdfv', 'd': 'ersfxc', 'e': 'wsdr',
-        'f': 'rtgvcd', 'g': 'tyhbvf', 'h': 'yujnbg', 'i': 'ujko', 'j': 'uikmnh',
-        'k': 'ijlm', 'l': 'okp', 'm': 'njk', 'n': 'bhjm', 'o': 'iklp',
-        'p': 'ol', 'q': 'wa', 'r': 'edft', 's': 'wedxza', 't': 'rfgy',
-        'u': 'yhji', 'v': 'cfgb', 'w': 'qase', 'x': 'zsdc', 'y': 'tghu', 'z': 'asx'
-    }
-    for char in text:
-        # 4% chance of making a typo on alphabetic characters
-        if char.lower() in qwerty_layout and random.random() < 0.04:
-            wrong_char = random.choice(qwerty_layout[char.lower()])
-            if char.isupper():
-                wrong_char = wrong_char.upper()
-                
-            await page.keyboard.type(wrong_char)
-            await asyncio.sleep(random.uniform(0.1, 0.2))
-            
-            # 15% chance of double typo
-            if random.random() < 0.15:
-                extra_wrong = random.choice("abcdefghijklmnopqrstuvwxyz")
-                await page.keyboard.type(extra_wrong)
-                await asyncio.sleep(random.uniform(0.1, 0.2))
-                await asyncio.sleep(random.uniform(0.2, 0.35))
-                await page.keyboard.press("Backspace")
-                await asyncio.sleep(random.uniform(0.08, 0.15))
-                await page.keyboard.press("Backspace")
-            else:
-                await asyncio.sleep(random.uniform(0.2, 0.3))
-                await page.keyboard.press("Backspace")
-            await asyncio.sleep(random.uniform(0.1, 0.2))
-            
-        await page.keyboard.type(char)
-        await asyncio.sleep(random.uniform(0.05, 0.12))
-
 async def post_comment(page, text):
     """Enters comment text using human typing simulation and publishes it to the post."""
     input_selectors = [
@@ -224,7 +152,7 @@ async def post_comment(page, text):
             if await comment_box.is_visible(timeout=3000):
                 await comment_box.click()
                 # Run the realistic human typing simulation
-                await human_type(page, text)
+                await type_like_human(page, text)
                 input_found = True
                 break
         except Exception:
@@ -273,68 +201,27 @@ async def get_video_description(page):
 
 async def send_telegram_notification(text, thread_id):
     """Sends status log messages directly to specified Telegram threads."""
+    if not thread_id:
+        return
     bot_token = os.getenv("REDIRECT_BOT_TOKEN") or os.getenv("BOT_TOKEN")
     chat_id = os.getenv("LOG_CHAT_ID") or os.getenv("LEAD_CHAT_ID")
-    if not bot_token or not chat_id or not thread_id:
-        return
-        
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "message_thread_id": int(thread_id),
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"[!] Failed to send Telegram log: {e}")
+    await send_telegram_message(bot_token, chat_id, text, thread_id)
 
 async def check_captcha(page, profile_id, thread_id):
     """Detects if a captcha challenge is displayed and blocks execution until resolved by operator."""
-    captcha_selectors = [
-        "iframe[src*='captcha']",
-        "div.captcha_verify_container",
-        ".secsdk-captcha-drag-wrapper",
-        "#tiktok-verify-ele",
-        "[class*='captcha']"
-    ]
-    
-    captcha_found = False
-    for sel in captcha_selectors:
-        try:
-            elem = page.locator(sel).first
-            if await elem.is_visible(timeout=1000):
-                captcha_found = True
-                break
-        except Exception:
-            continue
-            
-    if captcha_found:
+    async def alert():
         msg = f"🚨 <b>[CAPTCHA ALERT]</b>\nНа профиле <code>{profile_id}</code> обнаружена капча!\nПожалуйста, решите её вручную в окне браузера."
         print(f"[!] Captcha detected on profile {profile_id}. Waiting for manual resolution...")
         if thread_id:
             await send_telegram_notification(msg, thread_id)
-            
-        while True:
-            await asyncio.sleep(4)
-            still_has_captcha = False
-            for sel in captcha_selectors:
-                try:
-                    elem = page.locator(sel).first
-                    if await elem.is_visible(timeout=1000):
-                        still_has_captcha = True
-                        break
-                except Exception:
-                    continue
-            if not still_has_captcha:
-                break
-                
+
+    async def resolved():
         ok_msg = f"✅ <b>[CAPTCHA RESOLVED]</b>\nКапча на профиле <code>{profile_id}</code> успешно решена. Бот продолжает работу."
         print(f"[+] Captcha resolved. Resuming automation.")
         if thread_id:
             await send_telegram_notification(ok_msg, thread_id)
+
+    await wait_for_captcha_resolution(page, on_detected=alert, on_resolved=resolved)
 
 async def run_automation(mode, profile_id, geo, limit, api_url, headless):
     geo_data = GEO_DATABASE.get(geo)
@@ -377,131 +264,134 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
             page = await context.new_page()
             
         print("[*] Browser initialized. Navigating to TikTok...")
-        try:
-            await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
-        except Exception as e:
-            print(f"[!] Error loading TikTok: {e}")
-            await browser.close()
-            sys.exit(1)
-            
         matching_count = 0
         processed_videos = 0
-        
-        # Loop through search queries or FYP
-        for query in geo_data["queries"]:
-            if processed_videos >= limit:
-                break
-                
-            print(f"[*] Querying search for warm-up keyword: '{query}'")
-            search_url = f"https://www.tiktok.com/search?q={query}"
+
+        # Entire automation body runs under try/finally so an unexpected exception
+        # (e.g. a Playwright "Target closed" error) never leaks the browser process
+        # or leaves the AdsPower profile running in the background.
+        try:
             try:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(3000)
-                await check_captcha(page, profile_id, thread_id)
             except Exception as e:
-                print(f"[!] Error querying keyword '{query}': {e}")
-                continue
-                
-            # Loop for scrolling and interacting inside this keyword search
-            for scroll_round in range(5):
+                print(f"[!] Error loading TikTok: {e}")
+                sys.exit(1)
+
+            # Loop through search queries or FYP
+            for query in geo_data["queries"]:
                 if processed_videos >= limit:
                     break
-                    
-                await check_captcha(page, profile_id, thread_id)
-                # Ease-in-out math scroll to load contents
-                print(f"[*] Simulating human scrolling (round {scroll_round + 1}/5)...")
-                await math_scroll(page, offset=random.randint(600, 1000), duration=random.uniform(1.2, 2.0))
-                await page.wait_for_timeout(2000)
-                
-                # Fetch visible video cards
-                video_elements = page.locator("a[href*='/video/']")
-                count = await video_elements.count()
-                if count == 0:
-                    continue
-                    
-                # Pick a random visible video card to click and inspect
-                target_idx = random.randint(0, min(count - 1, 3))
-                video_elem = video_elements.nth(target_idx)
-                
-                video_url = await video_elem.get_attribute("href")
-                if not video_url:
-                    continue
-                    
-                print(f"[*] Inspecting video: {video_url}")
+
+                print(f"[*] Querying search for warm-up keyword: '{query}'")
+                search_url = f"https://www.tiktok.com/search?q={query}"
                 try:
-                    await video_elem.click()
-                    await page.wait_for_timeout(3000) # wait for overlay
-                    
-                    # Fetch description
-                    desc = await get_video_description(page)
-                    print(f"    Description: '{desc}'")
-                    
-                    # Determine relevance (dating / adult related keywords)
-                    dating_kws = ["dating", "relationship", "single", "girlfriend", "boyfriend", "sevgili", "flört", "citas", "rencontre", "couple", "namoro", "出会い", "소개팅", "hẹn hò"]
-                    is_relevant = any(kw in desc.lower() for kw in dating_kws) or any(kw in query.lower() for kw in dating_kws)
-                    
-                    if is_relevant:
-                        matching_count += 1
-                        print(f"    [+] Video identified as relevant ({matching_count} total).")
-                        if thread_id:
-                            await send_telegram_notification(f"🎯 <b>Найдено целевое видео:</b> {video_url}\n📝 Описание: {desc[:150]}...", thread_id)
-                        
-                        # Human-like watch simulation (retention warm-up)
-                        watch_time = random.randint(6, 15)
-                        print(f"    [*] Simulating retention: watching for {watch_time} seconds...")
-                        await page.wait_for_timeout(watch_time * 1000)
-                        
-                        # Decide interaction based on mode
-                        should_interact = False
-                        if mode == "warmup":
-                            # Warmup interacts with all matching videos to tune recommendation feed
-                            should_interact = True
-                        elif mode == "spy":
-                            # Spy mode likes/comments on every 5th matching video
-                            should_interact = (matching_count % 5 == 0)
-                            if should_interact:
-                                print(f"    [+] Spy Trigger! Match count is {matching_count} (every 5th video).")
-                                
-                        if should_interact:
-                            await check_captcha(page, profile_id, thread_id)
-                            # 1. Like
-                            liked = await like_video(page)
-                            await page.wait_for_timeout(random.randint(1000, 2000))
-                            
-                            # 2. Comment
-                            comment_text = random.choice(geo_data["comments"])
-                            commented = await post_comment(page, comment_text)
-                            await page.wait_for_timeout(random.randint(2000, 4000))
-                            
-                            if thread_id:
-                                interaction_status = f"✅ <b>Взаимодействие:</b> {video_url}\n👀 Удержание: {watch_time} сек\n❤️ Лайк: {'ок' if liked else 'не найден'}\n💬 Коммент: \"{comment_text}\""
-                                await send_telegram_notification(interaction_status, thread_id)
-                            
-                    else:
-                        print("    [-] Video is not relevant. Skipping.")
-                        
-                    processed_videos += 1
-                    
-                    # Close video overlay (usually by pressing Escape key or clicking close button)
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(2000)
-                    
+                    await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                    await page.wait_for_timeout(3000)
+                    await check_captcha(page, profile_id, thread_id)
                 except Exception as e:
-                    print(f"    [!] Error during video interaction: {e}")
-                    # Ensure overlay is closed
-                    await page.keyboard.press("Escape")
+                    print(f"[!] Error querying keyword '{query}': {e}")
+                    continue
+
+                # Loop for scrolling and interacting inside this keyword search
+                for scroll_round in range(5):
+                    if processed_videos >= limit:
+                        break
+
+                    await check_captcha(page, profile_id, thread_id)
+                    # Ease-in-out math scroll to load contents
+                    print(f"[*] Simulating human scrolling (round {scroll_round + 1}/5)...")
+                    await math_scroll(page, offset=random.randint(600, 1000), duration=random.uniform(1.2, 2.0))
                     await page.wait_for_timeout(2000)
-                    
-        print("[*] Automation run finished.")
-        if thread_id:
-            await send_telegram_notification(f"⏹️ <b>Автоматизация завершена.</b>\nРежим: <code>{mode}</code>\nОбработано видео: <code>{processed_videos}</code>\nЦелевых совпадений: <code>{matching_count}</code>", thread_id)
-        if ws_endpoint:
+
+                    # Fetch visible video cards
+                    video_elements = page.locator("a[href*='/video/']")
+                    count = await video_elements.count()
+                    if count == 0:
+                        continue
+
+                    # Pick a random visible video card to click and inspect
+                    target_idx = random.randint(0, min(count - 1, 3))
+                    video_elem = video_elements.nth(target_idx)
+
+                    video_url = await video_elem.get_attribute("href")
+                    if not video_url:
+                        continue
+
+                    print(f"[*] Inspecting video: {video_url}")
+                    try:
+                        await video_elem.click()
+                        await page.wait_for_timeout(3000) # wait for overlay
+
+                        # Fetch description
+                        desc = await get_video_description(page)
+                        print(f"    Description: '{desc}'")
+
+                        # Determine relevance (dating / adult related keywords)
+                        dating_kws = ["dating", "relationship", "single", "girlfriend", "boyfriend", "sevgili", "flört", "citas", "rencontre", "couple", "namoro", "出会い", "소개팅", "hẹn hò"]
+                        is_relevant = any(kw in desc.lower() for kw in dating_kws) or any(kw in query.lower() for kw in dating_kws)
+
+                        if is_relevant:
+                            matching_count += 1
+                            print(f"    [+] Video identified as relevant ({matching_count} total).")
+                            if thread_id:
+                                await send_telegram_notification(f"🎯 <b>Найдено целевое видео:</b> {video_url}\n📝 Описание: {desc[:150]}...", thread_id)
+
+                            # Human-like watch simulation (retention warm-up)
+                            watch_time = random.randint(6, 15)
+                            print(f"    [*] Simulating retention: watching for {watch_time} seconds...")
+                            await page.wait_for_timeout(watch_time * 1000)
+
+                            # Decide interaction based on mode
+                            should_interact = False
+                            if mode == "warmup":
+                                # Warmup interacts with all matching videos to tune recommendation feed
+                                should_interact = True
+                            elif mode == "spy":
+                                # Spy mode likes/comments on every 5th matching video
+                                should_interact = (matching_count % 5 == 0)
+                                if should_interact:
+                                    print(f"    [+] Spy Trigger! Match count is {matching_count} (every 5th video).")
+
+                            if should_interact:
+                                await check_captcha(page, profile_id, thread_id)
+                                # 1. Like
+                                liked = await like_video(page)
+                                await page.wait_for_timeout(random.randint(1000, 2000))
+
+                                # 2. Comment
+                                comment_text = random.choice(geo_data["comments"])
+                                commented = await post_comment(page, comment_text)
+                                await page.wait_for_timeout(random.randint(2000, 4000))
+
+                                if thread_id:
+                                    interaction_status = f"✅ <b>Взаимодействие:</b> {video_url}\n👀 Удержание: {watch_time} сек\n❤️ Лайк: {'ок' if liked else 'не найден'}\n💬 Коммент: \"{comment_text}\""
+                                    await send_telegram_notification(interaction_status, thread_id)
+
+                        else:
+                            print("    [-] Video is not relevant. Skipping.")
+
+                        processed_videos += 1
+
+                        # Close video overlay (usually by pressing Escape key or clicking close button)
+                        await page.keyboard.press("Escape")
+                        await page.wait_for_timeout(2000)
+
+                    except Exception as e:
+                        print(f"    [!] Error during video interaction: {e}")
+                        # Ensure overlay is closed
+                        await page.keyboard.press("Escape")
+                        await page.wait_for_timeout(2000)
+
+            print("[*] Automation run finished.")
+            if thread_id:
+                await send_telegram_notification(f"⏹️ <b>Автоматизация завершена.</b>\nРежим: <code>{mode}</code>\nОбработано видео: <code>{processed_videos}</code>\nЦелевых совпадений: <code>{matching_count}</code>", thread_id)
+        finally:
+            # Always release the browser (and the AdsPower profile, if used) even if
+            # the automation loop above exited via an unhandled exception.
             await browser.close()
-            # Stop the AdsPower profile via Local API
-            await stop_adspower_profile(api_url, profile_id)
-        else:
-            await browser.close()
+            if ws_endpoint:
+                await stop_adspower_profile(api_url, profile_id)
 
 def main():
     parser = argparse.ArgumentParser(description="TikTok AdsPower Automator (Warm-up & Spy Modes)")

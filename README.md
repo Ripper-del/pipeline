@@ -4,43 +4,59 @@
 
 ## Архитектура проекта
 
-Проект разделен на три основных компонента:
+Проект состоит из пяти независимых сервисов, каждый в своей папке:
 
-1. **uniqreo** — Telegram-бот для уникализации фото- и видеоматериалов (на базе Pillow и FFmpeg).
-2. **ubtbot** — Набор сервисов для распределения и дожима трафика:
-   - Telegram Redirect Bot — перенаправление пользователей на смартлинк с отслеживанием по Telegram ID.
-   - WhatsApp Redirect Bot — аналогичный функционал для WhatsApp на базе Green-API.
-   - S2S FastAPI Server — прием постбэков от партнерских программ (например, iMonetizeIt) и отправка уведомлений о конверсиях в Telegram.
-3. **tiktok_scraper** — Консольная утилита для парсинга видео и комментариев в TikTok по ключевым словам.
+1. **uniqreo** — Telegram-бот для уникализации фото- и видеоматериалов (на базе Pillow и FFmpeg), с автозаливом уникализированных роликов в TikTok.
+2. **telegram-redirect-bot** — перенаправление Telegram-пользователей на смартлинк с отслеживанием по Telegram ID и SQLite-очередью дожимов (24ч/48ч).
+3. **whatsapp-redirect-bot** — аналогичный функционал для WhatsApp на базе Green-API.
+4. **s2s-postback-server** — FastAPI-сервер, принимающий постбэки от партнёрских программ (например, iMonetizeIt) и отправляющий уведомления о конверсиях в Telegram.
+5. **tiktok_scraper** — консольные утилиты для парсинга TikTok по ключевым словам, прогрева/спая аккаунтов и автозалива через AdsPower. Общий код для AdsPower/капчи/human-like ввода/Telegram-уведомлений вынесен в `tiktok_scraper/common/` и переиспользуется также в `uniqreo/uploader.py`.
 
 ## Структура директорий
 
 ```
 pipeline/
-├── docker-compose.yml       # Конфигурация для запуска всей экосистемы в Docker
-├── requirements.txt         # Консолидированные зависимости проекта
-├── .env.example             # Шаблон конфигурации окружения
-├── .gitignore               # Исключения для Git
-├── uniqreo/                 # Компонент уникализации медиа
-│   ├── bot.py               # Бот уникализации с поддержкой автозалива
-│   ├── uploader.py          # Модуль автозалива для запуска в боте
-│   ├── Dockerfile           # Сборка контейнера с установкой FFmpeg
-│   ├── requirements.txt     # Локальные зависимости uniqreo
-│   └── core/                # Логика обработки изображений и видео
+├── docker-compose.yml           # Конфигурация для запуска всей экосистемы в Docker
+├── requirements.txt             # Консолидированные зависимости проекта (для локального запуска без Docker)
+├── .env.example                 # Шаблон конфигурации окружения
+├── .gitignore                   # Исключения для Git
+├── .dockerignore                # Исключения для Docker build-контекста (root-context нужен uniqreo)
+│
+├── uniqreo/                     # Компонент уникализации медиа + автозалив в TikTok
+│   ├── bot.py                   # Бот уникализации с поддержкой автозалива
+│   ├── uploader.py              # Модуль автозалива (использует tiktok_scraper/common)
+│   ├── Dockerfile               # Собирается из корня репозитория (нужен доступ к tiktok_scraper/common)
+│   ├── requirements.txt         # Локальные зависимости uniqreo
+│   └── core/                    # Логика обработки изображений и видео
 │       ├── config.py
 │       ├── photo_processor.py
 │       └── video_processor.py
-├── ubtbot/                  # Компонент распределения трафика
-│   ├── bot.py               # Telegram редирект-бот
-│   ├── wa_bot.py            # WhatsApp редирект-бот (Green-API)
-│   ├── s2s_server.py        # FastAPI сервер для S2S-постбэков
-│   ├── requirements.txt     # Локальные зависимости ubtbot
-│   └── Dockerfile           # Сборка контейнера ubtbot
-└── tiktok_scraper/          # Компонент парсинга и автоматизации TikTok
-    ├── scraper.py           # Консольный скрипт парсера
-    ├── automator.py         # Скрипт прогрева и спая через AdsPower
-    ├── uploader.py          # Скрипт автозалива через AdsPower
-    └── requirements.txt     # Локальные зависимости парсера и автоматизатора
+│
+├── tiktok_scraper/              # Парсинг и автоматизация TikTok
+│   ├── common/                  # Общий код: AdsPower, капча, human-typing, Telegram-уведомления
+│   │   ├── adspower.py
+│   │   ├── captcha.py
+│   │   ├── human_input.py
+│   │   └── telegram_notify.py
+│   ├── scraper.py               # Консольный скрипт парсера
+│   ├── automator.py             # Скрипт прогрева и спая через AdsPower
+│   ├── uploader.py              # Скрипт автозалива через AdsPower (CLI)
+│   └── requirements.txt         # Локальные зависимости парсера и автоматизатора
+│
+├── telegram-redirect-bot/       # Telegram редирект-бот
+│   ├── bot.py
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+├── whatsapp-redirect-bot/       # WhatsApp редирект-бот (Green-API)
+│   ├── bot.py
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+└── s2s-postback-server/         # FastAPI сервер для S2S-постбэков
+    ├── server.py
+    ├── Dockerfile
+    └── requirements.txt
 ```
 
 ## Конфигурация окружения (.env)
@@ -98,21 +114,21 @@ docker-compose logs -f [service_name]
    pip install -r requirements.txt
    ```
 3. Запуск сервисов по отдельности:
-   * Бот уникализации:
+   * Бот уникализации: `uniqreo/uploader.py` импортирует общий пакет `tiktok_scraper/common`, поэтому при локальном запуске (не в Docker) нужно добавить `tiktok_scraper` в `PYTHONPATH`, чтобы `common` резолвился как обычный python-модуль:
      ```bash
-     cd uniqreo && python bot.py
+     cd uniqreo && PYTHONPATH=../tiktok_scraper python bot.py
      ```
    * Telegram-бот редиректа:
      ```bash
-     cd ubtbot && python bot.py
+     cd telegram-redirect-bot && python bot.py
      ```
    * WhatsApp-бот редиректа:
      ```bash
-     cd ubtbot && python wa_bot.py
+     cd whatsapp-redirect-bot && python bot.py
      ```
    * S2S-сервер:
      ```bash
-     cd ubtbot && uvicorn s2s_server:app --host 0.0.0.0 --port 8000
+     cd s2s-postback-server && uvicorn server:app --host 0.0.0.0 --port 8000
      ```
    * Парсер TikTok:
      Перед первым запуском парсера необходимо установить браузерные бинарные файлы Playwright:

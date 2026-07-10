@@ -1,3 +1,4 @@
+import html
 import os
 import aiohttp
 from fastapi import FastAPI, Query
@@ -15,19 +16,37 @@ if not all([BOT_TOKEN, CHAT_ID, THREAD_ID]):
     print("⚠️ ВНИМАНИЕ: Проверь, что REDIRECT_BOT_TOKEN, LEAD_CHAT_ID и LEAD_THREAD_ID заполнены в .env!")
 
 
+def safe_float(value, default=0.0):
+    """Parses partner-supplied numeric strings without ever raising - malformed
+    postback data must not crash the endpoint (partner needs a 200 OK, or it retries)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def send_to_telegram(text: str):
     """Асинхронная отправка сообщения в конкретную ветку Telegram-чата"""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Пропускаю отправку в Telegram: REDIRECT_BOT_TOKEN или LEAD_CHAT_ID не заданы.")
+        return
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "message_thread_id": THREAD_ID,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
+    if THREAD_ID:
+        try:
+            payload["message_thread_id"] = int(THREAD_ID)
+        except ValueError:
+            print(f"⚠️ LEAD_THREAD_ID не является числом ({THREAD_ID!r}), отправляю без привязки к ветке.")
+
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload) as response:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     err_info = await response.text()
                     print(f"❌ Ошибка от Telegram API: {err_info}")
@@ -49,19 +68,21 @@ async def handle_postback(
     """Ловит GET-запрос от iMonetizeIt и пушит его в Telegram"""
 
     # Считаем итоговый чек (в зависимости от того, упали деньги сразу на баланс или в холд)
-    real_money = payout if float(payout) > 0 else hold_payout
-    status_icon = "🔥" if float(payout) > 0 else "⏳"
-    status_text = "НАЧИСЛЕНО" if float(payout) > 0 else "В ХОЛДЕ"
+    payout_value = safe_float(payout)
+    real_money = payout if payout_value > 0 else hold_payout
+    status_icon = "🔥" if payout_value > 0 else "⏳"
+    status_text = "НАЧИСЛЕНО" if payout_value > 0 else "В ХОЛДЕ"
 
-    # Формируем сочную сводку для рабочего чата
+    # Формируем сочную сводку для рабочего чата (партнёрские поля экранируем -
+    # это внешний ввод, и без экранирования один "<" сломает HTML-парсинг у Telegram)
     message = (
         f"{status_icon} <b>НОВАЯ КОНВЕРСИЯ [{status_text}]!</b>\n\n"
-        f"💵 <b>Доход:</b> <code>${real_money}</code>\n"
-        f"🌍 <b>Гео:</b> #{country}\n"
-        f"📱 <b>Система:</b> {os_sys}\n"
-        f"📡 <b>Связь:</b> {connection_type} ({carrier})\n"
-        f"🎯 <b>Тип трафика:</b> {traffic_type}\n\n"
-        f"👤 <b>TG ID лида:</b> <code>{click_id}</code>\n"
+        f"💵 <b>Доход:</b> <code>${html.escape(str(real_money))}</code>\n"
+        f"🌍 <b>Гео:</b> #{html.escape(country)}\n"
+        f"📱 <b>Система:</b> {html.escape(os_sys)}\n"
+        f"📡 <b>Связь:</b> {html.escape(connection_type)} ({html.escape(carrier)})\n"
+        f"🎯 <b>Тип трафика:</b> {html.escape(traffic_type)}\n\n"
+        f"👤 <b>TG ID лида:</b> <code>{html.escape(click_id)}</code>\n"
         f"👆 <i>(можно скопировать кликом для проверки базы)</i>"
     )
 
@@ -76,4 +97,4 @@ if __name__ == "__main__":
     import uvicorn
 
     print("🚀 S2S Сервер запущен на порту 8000...")
-    uvicorn.run("s2s_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

@@ -1,5 +1,7 @@
 import asyncio
 import os
+import shutil
+import tempfile
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from core.config import API_ID, API_HASH, BOT_TOKEN, SOURCE_THREAD_ID, TARGET_THREAD_ID
@@ -21,19 +23,24 @@ upload_semaphore = asyncio.Semaphore(2)
 async def process_and_upload(client: Client, cmd_msg: Message, video_msg: Message, profile_id: str, caption: str):
     """Downloads, uniqueizes, and uploads the video in the background under semaphore limit."""
     async with upload_semaphore:
-        input_path = ""
+        task_dir_in = ""
+        task_dir_out = ""
         output_path = ""
         status_msg = await cmd_msg.reply_text("⏳ <b>[TikTok Uploader]</b> Скачиваю и уникализирую видео...")
-        
+
         try:
             os.makedirs("tmp_input", exist_ok=True)
             os.makedirs("tmp_output", exist_ok=True)
-            
+            # Each task gets its own subdirectory so two concurrent uploads with the
+            # same original filename can never clobber each other's file mid-render.
+            task_dir_in = tempfile.mkdtemp(dir="tmp_input")
+            task_dir_out = tempfile.mkdtemp(dir="tmp_output")
+
             # Download file
-            input_path = await video_msg.download(file_name="tmp_input/")
+            input_path = await video_msg.download(file_name=f"{task_dir_in}/")
             filename = os.path.basename(input_path)
-            output_path = f"tmp_output/unique_{filename}"
-            
+            output_path = f"{task_dir_out}/unique_{filename}"
+
             # Uniqueize video
             await process_video(input_path, output_path)
             await status_msg.edit_text("✅ Видео уникализировано. Начинаю запуск браузера и автозалив...")
@@ -59,10 +66,10 @@ async def process_and_upload(client: Client, cmd_msg: Message, video_msg: Messag
             print(f"Error in upload flow: {e}")
             await status_msg.edit_text(f"❌ Ошибка при обработке: {e}")
         finally:
-            if input_path and os.path.exists(input_path):
-                os.remove(input_path)
-            if output_path and os.path.exists(output_path):
-                os.remove(output_path)
+            if task_dir_in:
+                shutil.rmtree(task_dir_in, ignore_errors=True)
+            if task_dir_out:
+                shutil.rmtree(task_dir_out, ignore_errors=True)
 
 @app.on_message(filters.command("upload"))
 async def upload_handler(client: Client, message: Message):
@@ -113,7 +120,8 @@ async def main_handler(client: Client, message: Message):
 
     # uniqueization itself!!!
     async with semaphore:
-        input_path = ""
+        task_dir_in = ""
+        task_dir_out = ""
         output_path = ""
 
         try:
@@ -122,15 +130,19 @@ async def main_handler(client: Client, message: Message):
             # creating temporary directories
             os.makedirs("tmp_input", exist_ok=True)
             os.makedirs("tmp_output", exist_ok=True)
+            # Each task gets its own subdirectory so two concurrent renders with the
+            # same original filename can never clobber each other's file mid-render.
+            task_dir_in = tempfile.mkdtemp(dir="tmp_input")
+            task_dir_out = tempfile.mkdtemp(dir="tmp_output")
 
             # downloading file
-            input_path = await message.download(file_name="tmp_input/")
+            input_path = await message.download(file_name=f"{task_dir_in}/")
             filename = os.path.basename(input_path)
-            output_path = f"tmp_output/unique_{filename}"
+            output_path = f"{task_dir_out}/unique_{filename}"
 
             # routing
             if message.photo:
-                output_path = f"tmp_output/{filename}.jpg"
+                output_path = f"{task_dir_out}/{filename}.jpg"
                 await asyncio.to_thread(process_photo, input_path, output_path)
             elif message.video:
                 await process_video(input_path, output_path)
@@ -147,10 +159,10 @@ async def main_handler(client: Client, message: Message):
             await message.reply_text(f"Error while rendering file: {e}")
 
         finally:
-            if input_path and os.path.exists(input_path):
-                os.remove(input_path)
-            if output_path and os.path.exists(output_path):
-                os.remove(output_path)
+            if task_dir_in:
+                shutil.rmtree(task_dir_in, ignore_errors=True)
+            if task_dir_out:
+                shutil.rmtree(task_dir_out, ignore_errors=True)
 
 if __name__ == '__main__':
     print("BOT IS RUNNING! WAITING FOR MESSAGES...")

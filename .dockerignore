@@ -1,0 +1,14 @@
+.git
+.env
+.venv
+venv/
+env/
+**/__pycache__/
+**/*.session
+**/*.session-journal
+**/tmp_input/
+**/tmp_output/
+**/data/
+*.db
+*.db-journal
+*.md

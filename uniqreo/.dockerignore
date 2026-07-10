@@ -1,7 +1,0 @@
-.venv/
-.env
-tmp_input/
-tmp_output/
-__pycache__/
-*.session
-*.session-journal
