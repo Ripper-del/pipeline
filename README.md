@@ -1,5 +1,7 @@
 # Pipeline: Telegram & WhatsApp UBT Automation Suite
 
+![Tests](https://github.com/Ripper-del/pipeline/actions/workflows/tests.yml/badge.svg)
+
 Этот проект объединяет инструменты автоматизации трафика (UBT) для Telegram и WhatsApp, а также сервис уникализации медиафайлов.
 
 ## Архитектура проекта
@@ -18,9 +20,13 @@
 pipeline/
 ├── docker-compose.yml           # Конфигурация для запуска всей экосистемы в Docker
 ├── requirements.txt             # Консолидированные зависимости проекта (для локального запуска без Docker)
+├── requirements-dev.txt         # + pytest, для запуска тестов
+├── conftest.py                  # Настройка sys.path для тестов (модули лежат в разных папках)
 ├── .env.example                 # Шаблон конфигурации окружения
 ├── .gitignore                   # Исключения для Git
 ├── .dockerignore                # Исключения для Docker build-контекста (root-context нужен uniqreo)
+├── .github/workflows/tests.yml  # CI: pytest + py_compile на каждый push/PR
+├── tests/                       # Юнит-тесты (см. раздел «Тестирование»)
 │
 ├── uniqreo/                     # Компонент уникализации медиа + автозалив в TikTok
 │   ├── bot.py                   # Бот уникализации с поддержкой автозалива
@@ -68,7 +74,7 @@ cp .env.example .env
 ```
 
 ### Основные параметры:
-* **API_ID** и **API_HASH**: Данные приложения Telegram, полученные на https://my.telegram.org. Исползуются обоими Telegram-ботами.
+* **API_ID** и **API_HASH**: Данные приложения Telegram, полученные на https://my.telegram.org. Используются обоими Telegram-ботами.
 * **BOT_TOKEN**: Токен Telegram-бота для уникализации медиа (uniqreo).
 * **SOURCE_THREAD_ID** и **TARGET_THREAD_ID**: ID топиков/чатов для автоматической пересылки медиафайлов на уникализацию.
 * **ADMIN_TELEGRAM_IDS**: Telegram user ID через запятую, кому разрешено запускать `/upload` (реальный автозалив в TikTok через AdsPower). По умолчанию пусто — команда отклоняется для всех, пока явно не настроено.
