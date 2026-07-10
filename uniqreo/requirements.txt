@@ -1,6 +1,6 @@
-pyrofork
-tgcrypto
-Pillow
-python-dotenv
-playwright
-httpx
+pyrofork~=2.3.68
+tgcrypto~=1.2.5
+Pillow~=11.3.0
+python-dotenv~=1.2.1
+playwright==1.60.0
+httpx~=0.28.1

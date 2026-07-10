@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import random
 import math
@@ -11,6 +12,8 @@ from common.adspower import get_adspower_ws, stop_adspower_profile
 from common.captcha import wait_for_captcha_resolution
 from common.human_input import type_like_human
 from common.telegram_notify import send_telegram_message
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -130,11 +133,11 @@ async def like_video(page):
             btn = page.locator(sel).first
             if await btn.is_visible(timeout=2000):
                 await btn.click()
-                print("    [+] Liked video.")
+                logger.info("Liked video.")
                 return True
         except Exception:
             continue
-    print("    [!] Could not locate like button.")
+    logger.warning("Could not locate like button.")
     return False
 
 async def post_comment(page, text):
@@ -159,9 +162,9 @@ async def post_comment(page, text):
             continue
             
     if not input_found:
-        print("    [!] Could not find comment input box.")
+        logger.warning("Could not find comment input box.")
         return False
-        
+
     # Find publish button
     publish_selectors = [
         "[data-e2e='comment-post']",
@@ -173,14 +176,14 @@ async def post_comment(page, text):
             pub_btn = page.locator(sel).first
             if await pub_btn.is_visible(timeout=2000):
                 await pub_btn.click()
-                print(f"    [+] Posted comment: '{text}'")
+                logger.info(f"Posted comment: '{text}'")
                 return True
         except Exception:
             continue
-            
+
     # Try pressing Enter as a fallback
     await page.keyboard.press("Enter")
-    print(f"    [+] Posted comment via Enter key: '{text}'")
+    logger.info(f"Posted comment via Enter key: '{text}'")
     return True
 
 async def get_video_description(page):
@@ -211,13 +214,13 @@ async def check_captcha(page, profile_id, thread_id):
     """Detects if a captcha challenge is displayed and blocks execution until resolved by operator."""
     async def alert():
         msg = f"🚨 <b>[CAPTCHA ALERT]</b>\nНа профиле <code>{profile_id}</code> обнаружена капча!\nПожалуйста, решите её вручную в окне браузера."
-        print(f"[!] Captcha detected on profile {profile_id}. Waiting for manual resolution...")
+        logger.warning(f"Captcha detected on profile {profile_id}. Waiting for manual resolution...")
         if thread_id:
             await send_telegram_notification(msg, thread_id)
 
     async def resolved():
         ok_msg = f"✅ <b>[CAPTCHA RESOLVED]</b>\nКапча на профиле <code>{profile_id}</code> успешно решена. Бот продолжает работу."
-        print(f"[+] Captcha resolved. Resuming automation.")
+        logger.info("Captcha resolved. Resuming automation.")
         if thread_id:
             await send_telegram_notification(ok_msg, thread_id)
 
@@ -226,34 +229,34 @@ async def check_captcha(page, profile_id, thread_id):
 async def run_automation(mode, profile_id, geo, limit, api_url, headless):
     geo_data = GEO_DATABASE.get(geo)
     if not geo_data:
-        print(f"[!] Invalid GEO: {geo}")
+        logger.error(f"Invalid GEO: {geo}")
         sys.exit(1)
-        
+
     # Resolve target thread for logs
     thread_id = os.getenv("WARMUP_THREAD_ID") if mode == "warmup" else os.getenv("SPY_THREAD_ID")
-        
+
     log_text = f"🤖 <b>[TikTok Automator]</b>\nЗапущен режим: <code>{mode}</code>\nГЕО: <code>{geo}</code>\nПрофиль AdsPower: <code>{profile_id or 'Local'}</code>"
-    print(f"[*] Starting automator in '{mode}' mode. GEO: '{geo}' (Lang: '{geo_data['lang']}')")
+    logger.info(f"Starting automator in '{mode}' mode. GEO: '{geo}' (Lang: '{geo_data['lang']}')")
     if thread_id:
         await send_telegram_notification(log_text, thread_id)
-    
+
     ws_endpoint = None
     if profile_id:
         try:
             ws_endpoint = await get_adspower_ws(api_url, profile_id)
         except Exception as e:
-            print(f"[!] Connection failed: {e}")
+            logger.error(f"Connection failed: {e}")
             sys.exit(1)
             
     async with async_playwright() as p:
         if ws_endpoint:
-            print("[*] Connecting Playwright to AdsPower antidetect browser session...")
+            logger.info("Connecting Playwright to AdsPower antidetect browser session...")
             browser = await p.chromium.connect_over_cdp(ws_endpoint)
             # Fetch active context
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else await context.new_page()
         else:
-            print("[*] Launching standard Playwright Chromium (AdsPower ID not provided)...")
+            logger.info("Launching standard Playwright Chromium (AdsPower ID not provided)...")
             browser = await p.chromium.launch(
                 headless=headless,
                 args=["--disable-blink-features=AutomationControlled"]
@@ -262,8 +265,8 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
-            
-        print("[*] Browser initialized. Navigating to TikTok...")
+
+        logger.info("Browser initialized. Navigating to TikTok...")
         matching_count = 0
         processed_videos = 0
 
@@ -275,7 +278,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(3000)
             except Exception as e:
-                print(f"[!] Error loading TikTok: {e}")
+                logger.error(f"Error loading TikTok: {e}")
                 sys.exit(1)
 
             # Loop through search queries or FYP
@@ -283,14 +286,14 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 if processed_videos >= limit:
                     break
 
-                print(f"[*] Querying search for warm-up keyword: '{query}'")
+                logger.info(f"Querying search for warm-up keyword: '{query}'")
                 search_url = f"https://www.tiktok.com/search?q={query}"
                 try:
                     await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
                     await page.wait_for_timeout(3000)
                     await check_captcha(page, profile_id, thread_id)
                 except Exception as e:
-                    print(f"[!] Error querying keyword '{query}': {e}")
+                    logger.warning(f"Error querying keyword '{query}': {e}")
                     continue
 
                 # Loop for scrolling and interacting inside this keyword search
@@ -300,7 +303,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
 
                     await check_captcha(page, profile_id, thread_id)
                     # Ease-in-out math scroll to load contents
-                    print(f"[*] Simulating human scrolling (round {scroll_round + 1}/5)...")
+                    logger.info(f"Simulating human scrolling (round {scroll_round + 1}/5)...")
                     await math_scroll(page, offset=random.randint(600, 1000), duration=random.uniform(1.2, 2.0))
                     await page.wait_for_timeout(2000)
 
@@ -318,14 +321,14 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                     if not video_url:
                         continue
 
-                    print(f"[*] Inspecting video: {video_url}")
+                    logger.info(f"Inspecting video: {video_url}")
                     try:
                         await video_elem.click()
                         await page.wait_for_timeout(3000) # wait for overlay
 
                         # Fetch description
                         desc = await get_video_description(page)
-                        print(f"    Description: '{desc}'")
+                        logger.info(f"Description: '{desc}'")
 
                         # Determine relevance (dating / adult related keywords)
                         dating_kws = ["dating", "relationship", "single", "girlfriend", "boyfriend", "sevgili", "flört", "citas", "rencontre", "couple", "namoro", "出会い", "소개팅", "hẹn hò"]
@@ -333,13 +336,13 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
 
                         if is_relevant:
                             matching_count += 1
-                            print(f"    [+] Video identified as relevant ({matching_count} total).")
+                            logger.info(f"Video identified as relevant ({matching_count} total).")
                             if thread_id:
                                 await send_telegram_notification(f"🎯 <b>Найдено целевое видео:</b> {video_url}\n📝 Описание: {desc[:150]}...", thread_id)
 
                             # Human-like watch simulation (retention warm-up)
                             watch_time = random.randint(6, 15)
-                            print(f"    [*] Simulating retention: watching for {watch_time} seconds...")
+                            logger.info(f"Simulating retention: watching for {watch_time} seconds...")
                             await page.wait_for_timeout(watch_time * 1000)
 
                             # Decide interaction based on mode
@@ -351,7 +354,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                                 # Spy mode likes/comments on every 5th matching video
                                 should_interact = (matching_count % 5 == 0)
                                 if should_interact:
-                                    print(f"    [+] Spy Trigger! Match count is {matching_count} (every 5th video).")
+                                    logger.info(f"Spy Trigger! Match count is {matching_count} (every 5th video).")
 
                             if should_interact:
                                 await check_captcha(page, profile_id, thread_id)
@@ -369,7 +372,7 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                                     await send_telegram_notification(interaction_status, thread_id)
 
                         else:
-                            print("    [-] Video is not relevant. Skipping.")
+                            logger.info("Video is not relevant. Skipping.")
 
                         processed_videos += 1
 
@@ -378,12 +381,12 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                         await page.wait_for_timeout(2000)
 
                     except Exception as e:
-                        print(f"    [!] Error during video interaction: {e}")
+                        logger.warning(f"Error during video interaction: {e}")
                         # Ensure overlay is closed
                         await page.keyboard.press("Escape")
                         await page.wait_for_timeout(2000)
 
-            print("[*] Automation run finished.")
+            logger.info("Automation run finished.")
             if thread_id:
                 await send_telegram_notification(f"⏹️ <b>Автоматизация завершена.</b>\nРежим: <code>{mode}</code>\nОбработано видео: <code>{processed_videos}</code>\nЦелевых совпадений: <code>{matching_count}</code>", thread_id)
         finally:
@@ -394,6 +397,8 @@ async def run_automation(mode, profile_id, geo, limit, api_url, headless):
                 await stop_adspower_profile(api_url, profile_id)
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
     parser = argparse.ArgumentParser(description="TikTok AdsPower Automator (Warm-up & Spy Modes)")
     parser.add_argument("--mode", choices=["warmup", "spy"], required=True, help="Automation mode: warmup or spy")
     parser.add_argument("--profile-id", help="AdsPower profile user_id. If omitted, will check .env's ADSPOWER_PROFILE_ID or run standard Playwright")

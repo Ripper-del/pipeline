@@ -1,4 +1,7 @@
+import logging
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 async def send_telegram_message(bot_token, chat_id, text, thread_id=None, timeout=10):
@@ -17,10 +20,10 @@ async def send_telegram_message(bot_token, chat_id, text, thread_id=None, timeou
         try:
             payload["message_thread_id"] = int(thread_id)
         except (TypeError, ValueError):
-            print(f"[!] Ignoring non-numeric Telegram thread id: {thread_id!r}")
+            logger.warning(f"Ignoring non-numeric Telegram thread id: {thread_id!r}")
 
     try:
         async with httpx.AsyncClient() as client:
             await client.post(url, json=payload, timeout=timeout)
     except Exception as e:
-        print(f"[!] Failed to send Telegram log: {e}")
+        logger.error(f"Failed to send Telegram log: {e}")

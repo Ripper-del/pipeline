@@ -1,2 +1,2 @@
-aiohttp
-python-dotenv
+aiohttp~=3.13.5
+python-dotenv~=1.2.1

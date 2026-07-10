@@ -1,2 +1,2 @@
-playwright
-httpx
+playwright==1.60.0
+httpx~=0.28.1

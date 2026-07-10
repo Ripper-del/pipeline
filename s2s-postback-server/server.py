@@ -1,8 +1,13 @@
+import hmac
 import html
+import logging
 import os
 import aiohttp
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -11,9 +16,12 @@ app = FastAPI(title="iMonetizeIt S2S Postback Receiver")
 BOT_TOKEN = os.getenv("REDIRECT_BOT_TOKEN")
 CHAT_ID = os.getenv("LEAD_CHAT_ID")
 THREAD_ID = os.getenv("LEAD_THREAD_ID")
+POSTBACK_SECRET = os.getenv("S2S_POSTBACK_SECRET")
 
 if not all([BOT_TOKEN, CHAT_ID, THREAD_ID]):
-    print("⚠️ ВНИМАНИЕ: Проверь, что REDIRECT_BOT_TOKEN, LEAD_CHAT_ID и LEAD_THREAD_ID заполнены в .env!")
+    logger.warning("Проверь, что REDIRECT_BOT_TOKEN, LEAD_CHAT_ID и LEAD_THREAD_ID заполнены в .env!")
+if not POSTBACK_SECRET:
+    logger.warning("S2S_POSTBACK_SECRET не задан - /postback будет отклонять ВСЕ запросы (fail closed).")
 
 
 def safe_float(value, default=0.0):
@@ -28,7 +36,7 @@ def safe_float(value, default=0.0):
 async def send_to_telegram(text: str):
     """Асинхронная отправка сообщения в конкретную ветку Telegram-чата"""
     if not BOT_TOKEN or not CHAT_ID:
-        print("⚠️ Пропускаю отправку в Telegram: REDIRECT_BOT_TOKEN или LEAD_CHAT_ID не заданы.")
+        logger.warning("Пропускаю отправку в Telegram: REDIRECT_BOT_TOKEN или LEAD_CHAT_ID не заданы.")
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -42,20 +50,27 @@ async def send_to_telegram(text: str):
         try:
             payload["message_thread_id"] = int(THREAD_ID)
         except ValueError:
-            print(f"⚠️ LEAD_THREAD_ID не является числом ({THREAD_ID!r}), отправляю без привязки к ветке.")
+            logger.warning(f"LEAD_THREAD_ID не является числом ({THREAD_ID!r}), отправляю без привязки к ветке.")
 
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     err_info = await response.text()
-                    print(f"❌ Ошибка от Telegram API: {err_info}")
+                    logger.error(f"Ошибка от Telegram API: {err_info}")
         except Exception as e:
-            print(f"❌ Системная ошибка при отправке в ТГ: {e}")
+            logger.error(f"Системная ошибка при отправке в ТГ: {e}")
+
+
+@app.get("/health")
+async def health():
+    """Liveness probe for Docker healthcheck - no side effects, never touches Telegram."""
+    return {"status": "ok"}
 
 
 @app.get("/postback")
 async def handle_postback(
+        secret: str = Query("", description="Общий секрет для подтверждения подлинности постбэка"),
         click_id: str = Query("Неизвестно", description="Telegram ID мамонта"),
         payout: str = Query("0.00", description="Выплата"),
         hold_payout: str = Query("0.00", description="Выплата в холде"),
@@ -66,6 +81,11 @@ async def handle_postback(
         carrier: str = Query("N/A", description="Мобильный оператор")
 ):
     """Ловит GET-запрос от iMonetizeIt и пушит его в Telegram"""
+
+    # Без корректного secret запрос не может быть подтверждён как пришедший от
+    # партнёрки - отклоняем, не давая заспамить канал лидов фейковыми конверсиями.
+    if not POSTBACK_SECRET or not hmac.compare_digest(secret, POSTBACK_SECRET):
+        raise HTTPException(status_code=403, detail="Invalid or missing secret")
 
     # Считаем итоговый чек (в зависимости от того, упали деньги сразу на баланс или в холд)
     payout_value = safe_float(payout)
@@ -87,7 +107,7 @@ async def handle_postback(
     )
 
     await send_to_telegram(message)
-    print(f"💰 Зафиксирован лид на ${real_money} (Гео: {country}, ID: {click_id})")
+    logger.info(f"Зафиксирован лид на ${real_money} (Гео: {country}, ID: {click_id})")
 
     # Партнерке обязательно нужно вернуть 200 OK, иначе она будет слать повторы
     return {"status": "success", "message": "Postback delivered"}
@@ -96,5 +116,5 @@ async def handle_postback(
 if __name__ == "__main__":
     import uvicorn
 
-    print("🚀 S2S Сервер запущен на порту 8000...")
+    logger.info("S2S Сервер запущен на порту 8000...")
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

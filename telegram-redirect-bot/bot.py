@@ -4,6 +4,7 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+import logging
 import os
 import sqlite3
 import time
@@ -11,6 +12,9 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserIsBlocked
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -31,6 +35,7 @@ app = Client(
 
 DB_DIR = os.getenv("DATA_DIR", "data")
 DB_FILE = os.path.join(DB_DIR, "followups.db")
+HEARTBEAT_FILE = os.getenv("HEARTBEAT_FILE", "/tmp/heartbeat")
 
 def init_db():
     """Initializes SQLite database schema for storing scheduled follow-up messages,
@@ -119,10 +124,21 @@ FOLLOWUP_BUTTONS = {
     2: "▶️ UNLOCK FULL VIDEO",
 }
 
+async def heartbeat_loop(interval=30):
+    """Touches a heartbeat file periodically so a Docker healthcheck can tell a
+    hung (but not crashed) bot process apart from a genuinely live one."""
+    while True:
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            logger.warning(f"Could not write heartbeat file: {e}")
+        await asyncio.sleep(interval)
+
 async def followup_poller(client: Client):
     """Periodically checks the database for pending follow-ups and sends them.
     Runs as a background task for the lifetime of the bot process."""
-    print("⌛ Follow-up Poller task started...")
+    logger.info("Follow-up Poller task started...")
     while True:
         try:
             pending = await asyncio.to_thread(get_pending_followups)
@@ -143,15 +159,15 @@ async def followup_poller(client: Client):
                         disable_web_page_preview=True
                     )
                     await asyncio.to_thread(update_followup_status, followup_id, 'sent')
-                    print(f"📩 [Step {step}] Отправлен дожим юзеру {chat_id}")
+                    logger.info(f"[Step {step}] Отправлен дожим юзеру {chat_id}")
                 except UserIsBlocked:
-                    print(f"⚠️ Юзер {chat_id} заблокировал бота. Отмена дальнейшего дожима.")
+                    logger.warning(f"Юзер {chat_id} заблокировал бота. Отмена дальнейшего дожима.")
                     await asyncio.to_thread(cancel_pending_followups, chat_id)
                 except Exception as e:
-                    print(f"⚠️ [Step {step}] Ошибка отправки юзеру {chat_id}: {e}")
+                    logger.warning(f"[Step {step}] Ошибка отправки юзеру {chat_id}: {e}")
                     await asyncio.to_thread(update_followup_status, followup_id, 'failed')
         except Exception as e:
-            print(f"⚠️ Error in followup_poller loop: {e}")
+            logger.error(f"Error in followup_poller loop: {e}")
 
         await asyncio.sleep(60)
 
@@ -180,7 +196,7 @@ async def start_handler(client: Client, message: Message):
         reply_markup=keyboard,
         disable_web_page_preview=True
     )
-    print(f"🚀 Link for user is generated! {tg_id}: {personal_link}")
+    logger.info(f"Link for user is generated! {tg_id}: {personal_link}")
     await asyncio.to_thread(add_followups, message.chat.id, personal_link)
 
 
@@ -188,7 +204,8 @@ async def main():
     await app.start()
     init_db()
     asyncio.create_task(followup_poller(app))
-    print("🤖 Bot is loaded and waiting for traffic...")
+    asyncio.create_task(heartbeat_loop())
+    logger.info("Bot is loaded and waiting for traffic...")
     await idle()
     await app.stop()
 

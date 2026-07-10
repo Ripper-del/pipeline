@@ -1,7 +1,7 @@
 import asyncio
 import random
 
-async def process_video(input_path: str, output_path: str):
+async def process_video(input_path: str, output_path: str, timeout: int = 300):
 
     # 1. generating random filters
 
@@ -55,8 +55,14 @@ async def process_video(input_path: str, output_path: str):
         stderr=asyncio.subprocess.PIPE
     )
 
-    # waiting for rendering process to finish and reading logs
-    stdout, stderr = await process.communicate()
+    # waiting for rendering process to finish and reading logs, but not forever -
+    # a stuck/corrupt input must not permanently occupy a render semaphore slot
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise Exception(f"FFmpeg timed out after {timeout}s while processing {input_path} (stuck or corrupt input?)")
 
     # if error
     if process.returncode != 0:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -7,6 +8,8 @@ from common.adspower import get_adspower_ws, stop_adspower_profile
 from common.captcha import wait_for_captcha_resolution
 from common.human_input import clear_and_type
 from common.telegram_notify import send_telegram_message
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -23,59 +26,59 @@ async def check_captcha(page, profile_id):
     """Detects if a captcha challenge is displayed and blocks execution until resolved by operator."""
     async def alert():
         msg = f"🚨 <b>[CAPTCHA ALERT]</b>\nНа профиле <code>{profile_id}</code> обнаружена капча!\nПожалуйста, решите её вручную в окне браузера."
-        print(f"[!] Captcha detected on profile {profile_id}. Waiting for manual resolution...")
+        logger.warning(f"Captcha detected on profile {profile_id}. Waiting for manual resolution...")
         await send_telegram_notification(msg)
 
     async def resolved():
         ok_msg = f"✅ <b>[CAPTCHA RESOLVED]</b>\nКапча на профиле <code>{profile_id}</code> успешно решена. Залив продолжается."
-        print(f"[+] Captcha resolved. Resuming upload.")
+        logger.info("Captcha resolved. Resuming upload.")
         await send_telegram_notification(ok_msg)
 
     await wait_for_captcha_resolution(page, on_detected=alert, on_resolved=resolved)
 
 async def run_uploader(video_path, profile_id, caption, api_url, headless):
     if not os.path.exists(video_path):
-        err = f"❌ [!] Video file not found: {video_path}"
-        print(err)
-        await send_telegram_notification(err)
+        err = f"Video file not found: {video_path}"
+        logger.error(err)
+        await send_telegram_notification(f"❌ [!] {err}")
         return False
 
-    print(f"[*] Starting TikTok Uploader. Video: '{video_path}', Profile: '{profile_id}'")
+    logger.info(f"Starting TikTok Uploader. Video: '{video_path}', Profile: '{profile_id}'")
     await send_telegram_notification(f"🚀 <b>[TikTok Uploader]</b>\nЗапуск автозалива креатива.\nПрофиль: <code>{profile_id}</code>\nФайл: <code>{os.path.basename(video_path)}</code>")
 
     ws_endpoint = None
     try:
         ws_endpoint = await get_adspower_ws(api_url, profile_id)
     except Exception as e:
-        err = f"❌ [!] Failed to start AdsPower profile: {e}"
-        print(err)
-        await send_telegram_notification(err)
+        err = f"Failed to start AdsPower profile: {e}"
+        logger.error(err)
+        await send_telegram_notification(f"❌ [!] {err}")
         return False
 
     async with async_playwright() as p:
-        print("[*] Connecting Playwright to AdsPower session...")
+        logger.info("Connecting Playwright to AdsPower session...")
         browser = await p.chromium.connect_over_cdp(ws_endpoint)
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else await context.new_page()
 
         # Navigate to TikTok Studio / Upload Center
         upload_url = "https://www.tiktok.com/tiktokstudio/upload?lang=en"
-        print(f"[*] Navigating to: {upload_url}")
+        logger.info(f"Navigating to: {upload_url}")
         try:
             await page.goto(upload_url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(5000)
             await check_captcha(page, profile_id)
         except Exception as e:
             fallback_url = "https://www.tiktok.com/creator-center/upload?lang=en"
-            print(f"[!] Studio failed, attempting fallback: {fallback_url} (Error: {e})")
+            logger.warning(f"Studio failed, attempting fallback: {fallback_url} (Error: {e})")
             try:
                 await page.goto(fallback_url, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(5000)
                 await check_captcha(page, profile_id)
             except Exception as fe:
-                err = f"❌ [!] Failed to load TikTok upload pages: {fe}"
-                print(err)
-                await send_telegram_notification(err)
+                err = f"Failed to load TikTok upload pages: {fe}"
+                logger.error(err)
+                await send_telegram_notification(f"❌ [!] {err}")
                 await browser.close()
                 await stop_adspower_profile(api_url, profile_id)
                 return False
@@ -89,30 +92,30 @@ async def run_uploader(video_path, profile_id, caption, api_url, headless):
 
             if await file_input_frame.count() > 0:
                 target = iframe_elements
-                print("[*] File input located inside iframe.")
+                logger.info("File input located inside iframe.")
             elif await file_input_page.count() > 0:
                 target = page
-                print("[*] File input located on main page.")
+                logger.info("File input located on main page.")
             else:
                 await page.wait_for_timeout(5000)
                 if await file_input_frame.count() > 0:
                     target = iframe_elements
-                    print("[*] File input located inside iframe (delayed).")
+                    logger.info("File input located inside iframe (delayed).")
                 else:
                     target = page
-                    print("[*] Using main page context.")
+                    logger.info("Using main page context.")
         except Exception:
             target = page
 
         try:
-            print("[*] Uploading video file...")
+            logger.info("Uploading video file...")
             file_input = target.locator('input[type="file"]').first
             await file_input.set_input_files(video_path)
             await page.wait_for_timeout(3000)
             await send_telegram_notification("⏳ <b>[TikTok Uploader]</b> Видео выбрано. Идет загрузка на сервер...")
 
             # Wait for upload completion: Post button changes from disabled to enabled
-            print("[*] Waiting for video upload to process...")
+            logger.info("Waiting for video upload to process...")
             post_btn_selector = "button:has-text('Post'), button:has-text('Опубликовать'), [data-e2e='post_button']"
             post_btn = target.locator(post_btn_selector).first
 
@@ -120,14 +123,14 @@ async def run_uploader(video_path, profile_id, caption, api_url, headless):
 
             for wait_sec in range(90):
                 if not await post_btn.is_disabled():
-                    print("[+] Video uploaded and processed successfully.")
+                    logger.info("Video uploaded and processed successfully.")
                     break
                 await asyncio.sleep(2)
             else:
-                print("[!] Warning: Upload timeout or video is still processing.")
+                logger.warning("Upload timeout or video is still processing.")
 
             # Fill description/caption
-            print(f"[*] Entering video description: '{caption}'")
+            logger.info(f"Entering video description: '{caption}'")
             await send_telegram_notification("✍️ <b>[TikTok Uploader]</b> Видео загружено. Прописываю хэштеги...")
 
             desc_selectors = [
@@ -150,23 +153,23 @@ async def run_uploader(video_path, profile_id, caption, api_url, headless):
                 await clear_and_type(page, desc_box, caption)
                 await page.wait_for_timeout(2000)
             else:
-                print("[!] Could not locate description box.")
+                logger.warning("Could not locate description box.")
 
             # Post the video
             await check_captcha(page, profile_id)
-            print("[*] Clicking Post button...")
+            logger.info("Clicking Post button...")
             await post_btn.click()
             await page.wait_for_timeout(5000)
 
             success_msg = f"🎉 <b>[TikTok Uploader]</b>\nВидео успешно опубликовано!\nПрофиль: <code>{profile_id}</code>\nТекст: <i>{caption}</i>"
-            print("[*] Upload flow finished.")
+            logger.info("Upload flow finished.")
             await send_telegram_notification(success_msg)
             return True
 
         except Exception as e:
-            err = f"❌ [!] Error during upload automation: {e}"
-            print(err)
-            await send_telegram_notification(err)
+            err = f"Error during upload automation: {e}"
+            logger.error(err)
+            await send_telegram_notification(f"❌ [!] {err}")
             return False
         finally:
             await browser.close()

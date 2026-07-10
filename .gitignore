@@ -61,3 +61,6 @@ telegram-redirect-bot/*.session-journal
 
 # Temporary clone artifacts
 *_temp/
+
+# pytest
+.pytest_cache/

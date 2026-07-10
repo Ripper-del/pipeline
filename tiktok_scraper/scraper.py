@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import json
 import random
@@ -7,6 +8,8 @@ import sys
 from playwright.async_api import async_playwright
 
 from common.captcha import page_has_captcha
+
+logger = logging.getLogger(__name__)
 
 def extract_videos_from_search_json(json_data):
     """Defensively extracts video metadata from various potential TikTok search response structures."""
@@ -94,7 +97,7 @@ def make_response_collector(matcher, extractor, results, label):
                 items = extractor(data)
                 if items:
                     results.extend(items)
-                    print(f"  [+] Intercepted {label} chunk. Extracted {len(items)} items.")
+                    logger.info(f"Intercepted {label} chunk. Extracted {len(items)} items.")
             except Exception:
                 # Non-JSON or unexpected payload shape; ignore and keep listening.
                 pass
@@ -110,12 +113,12 @@ async def goto_with_retry(page, url, retries=3, base_delay=3):
             return True
         except Exception as e:
             last_error = e
-            print(f"  [!] Navigation attempt {attempt}/{retries} failed for {url}: {e}")
+            logger.warning(f"Navigation attempt {attempt}/{retries} failed for {url}: {e}")
             if attempt < retries:
                 delay = base_delay * attempt
-                print(f"      Retrying in {delay}s...")
+                logger.info(f"Retrying in {delay}s...")
                 await asyncio.sleep(delay)
-    print(f"  [!] Giving up on {url} after {retries} attempts ({last_error})")
+    logger.error(f"Giving up on {url} after {retries} attempts ({last_error})")
     return False
 
 async def resolve_captcha_if_present(page, headless):
@@ -124,15 +127,15 @@ async def resolve_captcha_if_present(page, headless):
     if not await page_has_captcha(page):
         return True
 
-    print("  [!] CAPTCHA detected.")
+    logger.warning("CAPTCHA detected.")
     if headless:
-        print("      Running headless - cannot solve CAPTCHA automatically. Skipping this page.")
+        logger.warning("Running headless - cannot solve CAPTCHA automatically. Skipping this page.")
         return False
 
-    print("      Please solve the CAPTCHA manually in the browser window...")
+    logger.info("Please solve the CAPTCHA manually in the browser window...")
     while await page_has_captcha(page):
         await asyncio.sleep(4)
-    print("  [+] CAPTCHA resolved. Resuming.")
+    logger.info("CAPTCHA resolved. Resuming.")
     return True
 
 def load_existing_results(output_file):
@@ -145,7 +148,7 @@ def load_existing_results(output_file):
         if isinstance(data, list):
             return data
     except Exception as e:
-        print(f"[!] Could not read existing results file for resume ({e}). Starting fresh.")
+        logger.warning(f"Could not read existing results file for resume ({e}). Starting fresh.")
     return []
 
 def save_results(output_file, results):
@@ -159,11 +162,11 @@ def save_results(output_file, results):
     os.replace(tmp_file, output_file)
 
 async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file, headless, resume, proxy):
-    print(f"[*] Starting TikTok Scraper. Search query: '{query}'")
+    logger.info(f"Starting TikTok Scraper. Search query: '{query}'")
     if desc_keywords:
-        print(f"[*] Description filters: {desc_keywords}")
+        logger.info(f"Description filters: {desc_keywords}")
     if comment_keywords:
-        print(f"[*] Comment filters: {comment_keywords}")
+        logger.info(f"Comment filters: {comment_keywords}")
 
     final_results = []
     done_ids = set()
@@ -171,10 +174,10 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
         final_results = load_existing_results(output_file)
         done_ids = {v["video_id"] for v in final_results}
         if done_ids:
-            print(f"[*] Resume mode: {len(done_ids)} videos already scraped, will be skipped.")
+            logger.info(f"Resume mode: {len(done_ids)} videos already scraped, will be skipped.")
 
     async with async_playwright() as p:
-        print("[*] Launching browser...")
+        logger.info("Launching browser...")
         launch_kwargs = dict(
             headless=headless,
             args=[
@@ -209,17 +212,17 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
 
             # Navigate to TikTok search results page
             search_url = f"https://www.tiktok.com/search?q={query}"
-            print(f"[*] Loading search page: {search_url}")
+            logger.info(f"Loading search page: {search_url}")
             if not await goto_with_retry(page, search_url):
-                print("[!] Could not load search page. Aborting.")
+                logger.error("Could not load search page. Aborting.")
                 sys.exit(1)
             if not await resolve_captcha_if_present(page, headless):
-                print("[!] Search page blocked by CAPTCHA. Aborting.")
+                logger.error("Search page blocked by CAPTCHA. Aborting.")
                 sys.exit(1)
 
             # Scroll page down several times to load more videos and trigger API requests
             for i in range(5):
-                print(f"[*] Scrolling search results (page scroll {i+1}/5)...")
+                logger.info(f"Scrolling search results (page scroll {i+1}/5)...")
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await page.wait_for_timeout(random.randint(2500, 3500))
 
@@ -233,30 +236,30 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
 
             # De-duplicate results
             videos_list = dedupe_by_key(search_videos, "video_id")[:limit]
-            print(f"[*] Search phase complete. Found {len(videos_list)} unique videos.")
+            logger.info(f"Search phase complete. Found {len(videos_list)} unique videos.")
 
             # Filter videos by description keywords
             filtered_videos = []
             if desc_keywords:
-                print(f"[*] Filtering videos by description keywords...")
+                logger.info("Filtering videos by description keywords...")
                 for v in videos_list:
                     desc_lower = v["description"].lower()
                     if any(kw.lower() in desc_lower for kw in desc_keywords):
                         filtered_videos.append(v)
-                print(f"[*] Description filter complete: {len(filtered_videos)} / {len(videos_list)} videos matched.")
+                logger.info(f"Description filter complete: {len(filtered_videos)} / {len(videos_list)} videos matched.")
             else:
                 filtered_videos = videos_list
-                print("[*] No description keywords specified. Matching all videos.")
+                logger.info("No description keywords specified. Matching all videos.")
 
             # Scraping comments for matching videos
             for idx, v in enumerate(filtered_videos):
                 video_url = v["video_url"]
 
                 if v["video_id"] in done_ids:
-                    print(f"[*] [{idx+1}/{len(filtered_videos)}] Already scraped, skipping: {video_url}")
+                    logger.info(f"[{idx+1}/{len(filtered_videos)}] Already scraped, skipping: {video_url}")
                     continue
 
-                print(f"[*] [{idx+1}/{len(filtered_videos)}] Scraping comments for video: {video_url}")
+                logger.info(f"[{idx+1}/{len(filtered_videos)}] Scraping comments for video: {video_url}")
 
                 video_comments = []
                 comment_listener = make_response_collector(
@@ -269,10 +272,10 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
 
                 try:
                     if not await goto_with_retry(page, video_url):
-                        print(f"  [!] Skipping video after repeated navigation failures: {video_url}")
+                        logger.warning(f"Skipping video after repeated navigation failures: {video_url}")
                         continue
                     if not await resolve_captcha_if_present(page, headless):
-                        print(f"  [!] Skipping video blocked by CAPTCHA: {video_url}")
+                        logger.warning(f"Skipping video blocked by CAPTCHA: {video_url}")
                         continue
 
                     # Scroll comments section to trigger network calls
@@ -292,10 +295,10 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
                         text_lower = c["text"].lower()
                         if any(kw.lower() in text_lower for kw in comment_keywords):
                             matched_comments.append(c)
-                    print(f"    [*] Comments filter: {len(matched_comments)} / {len(all_comments)} comments matched.")
+                    logger.info(f"Comments filter: {len(matched_comments)} / {len(all_comments)} comments matched.")
                 else:
                     matched_comments = all_comments
-                    print(f"    [*] Kept all {len(all_comments)} comments.")
+                    logger.info(f"Kept all {len(all_comments)} comments.")
 
                 v["matched_comments"] = matched_comments
                 v["total_scraped_comments"] = len(all_comments)
@@ -308,13 +311,15 @@ async def run_scraper(query, desc_keywords, comment_keywords, limit, output_file
                 # Grace timeout between video pages
                 await page.wait_for_timeout(random.randint(1500, 2500))
 
-            print(f"[*] Saving results to: {output_file}")
+            logger.info(f"Saving results to: {output_file}")
             save_results(output_file, final_results)
-            print("[*] Scraping completed successfully.")
+            logger.info("Scraping completed successfully.")
         finally:
             await browser.close()
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
     parser = argparse.ArgumentParser(description="TikTok CLI Scraper & Filter Utility")
     parser.add_argument("--search", "-s", required=True, help="Search query for TikTok videos")
     parser.add_argument("--desc-keywords", "-d", help="Comma-separated keywords to filter in video descriptions")

@@ -24,5 +24,10 @@ RUN mkdir -p /app/tmp_input /app/tmp_output
 # копируем весь код проекта в контейнер
 COPY uniqreo/ .
 
+# bot.py пишет в HEARTBEAT_FILE каждые 30с - если файл не обновлялся дольше 90с,
+# процесс жив, но завис (например, застрял в ожидании капчи/сети)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python3 -c "import time,sys; sys.exit(0 if time.time()-float(open('/tmp/heartbeat').read())<90 else 1)"
+
 # команда для запуска бота
 CMD ["python", "bot.py"]
