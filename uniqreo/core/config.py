@@ -9,7 +9,12 @@ load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# One bot process handles everything now (uniqueization, /upload, lead funnel,
+# ops-group control panel), so it uses the same token as the rest of the
+# pipeline's Telegram notifications (automator.py, uploader.py, s2s_server).
+BOT_TOKEN = os.getenv("REDIRECT_BOT_TOKEN")
+
+SMARTLINK_URL = os.getenv("SMARTLINK_URL")
 
 try:
     SOURCE_THREAD_ID = int(os.getenv("SOURCE_THREAD_ID", 0))
@@ -30,5 +35,5 @@ for _raw_id in os.getenv("ADMIN_TELEGRAM_IDS", "").split(","):
         except ValueError:
             logger.warning(f"Ignoring invalid ADMIN_TELEGRAM_IDS entry: {_raw_id!r}")
 
-if not all([API_ID, API_HASH, BOT_TOKEN]):
-    raise ValueError("all API_ID, API_HASH, BOT_TOKEN are required.")
+if not all([API_ID, API_HASH, BOT_TOKEN, SMARTLINK_URL]):
+    raise ValueError("API_ID, API_HASH, REDIRECT_BOT_TOKEN and SMARTLINK_URL are all required.")

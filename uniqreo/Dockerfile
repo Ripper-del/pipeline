@@ -1,9 +1,10 @@
 # питон 3.11 слим
 FROM python:3.11-slim
 
-# системные зависимости
+# системные зависимости (build-essential нужен, чтобы pip собрал tgcrypto -
+# это C-расширение, готовых wheel под все платформы для него нет)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -13,6 +14,11 @@ WORKDIR /app
 # общий пакет для TikTok/AdsPower-автоматизации (используется uploader.py),
 # кладём его сюда же, чтобы он резолвился как соседний top-level модуль "common"
 COPY tiktok_scraper/common/ ./common
+
+# полный tiktok_scraper - bot.py запускает automator.py подпроцессом (панель
+# управления в ветках), common/ дублируется внутри, это ок и дёшево по месту
+COPY tiktok_scraper/ ./tiktok_scraper
+ENV TIKTOK_SCRAPER_DIR=/app/tiktok_scraper
 
 # установка зависимостей
 COPY uniqreo/requirements.txt .

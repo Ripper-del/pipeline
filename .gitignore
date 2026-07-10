@@ -48,7 +48,7 @@ uniqreo/tmp_output/
 # Local SQLite state (follow-up queues; contains user PII, must not be committed)
 *.db
 *.db-journal
-telegram-redirect-bot/data/
+uniqreo/data/
 whatsapp-redirect-bot/data/
 s2s-postback-server/data/
 
@@ -57,8 +57,6 @@ s2s-postback-server/data/
 *.session-journal
 uniqreo/*.session
 uniqreo/*.session-journal
-telegram-redirect-bot/*.session
-telegram-redirect-bot/*.session-journal
 
 # Temporary clone artifacts
 *_temp/

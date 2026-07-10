@@ -6,8 +6,10 @@ import sys
 # under pytest doesn't require a real .env file.
 os.environ.setdefault("API_ID", "12345")
 os.environ.setdefault("API_HASH", "test_api_hash")
-os.environ.setdefault("BOT_TOKEN", "123456:test-bot-token")
+# uniqreo/bot.py is now the one merged Telegram bot process; it authenticates
+# with REDIRECT_BOT_TOKEN (see core/config.py).
 os.environ.setdefault("REDIRECT_BOT_TOKEN", "123456:test-bot-token")
+os.environ.setdefault("SMARTLINK_URL", "https://example.com/?u=")
 os.environ.setdefault("LEAD_CHAT_ID", "-100123456789")
 os.environ.setdefault("LEAD_THREAD_ID", "1")
 os.environ.setdefault("S2S_POSTBACK_SECRET", "test-secret")

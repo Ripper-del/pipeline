@@ -176,6 +176,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/stats")
+async def stats(
+        secret: str = Query("", description="Общий секрет - тот же, что и для /postback"),
+        hours: int = Query(24, description="Окно агрегации в часах"),
+):
+    """On-demand lead stats, used by the ops-group '📊 Статистика' control-panel button."""
+    if not POSTBACK_SECRET or not hmac.compare_digest(secret, POSTBACK_SECRET):
+        raise HTTPException(status_code=403, detail="Invalid or missing secret")
+    since_ts = int(time.time()) - hours * 3600
+    return await asyncio.to_thread(get_lead_stats_since, since_ts)
+
+
 @app.get("/postback")
 async def handle_postback(
         secret: str = Query("", description="Общий секрет для подтверждения подлинности постбэка"),

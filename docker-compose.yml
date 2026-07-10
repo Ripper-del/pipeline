@@ -1,5 +1,7 @@
 services:
-  # 1. Uniqreo Bot (Telegram media uniqueizer)
+  # 1. Uniqreo Bot - единственный Telegram-бот-процесс: уникализация медиа,
+  # /upload, воронка лидов (/start, дожимы), панель управления в ветках
+  # (прогрев/спай/статистика запускает automator.py подпроцессом)
   uniqreo_bot:
     build:
       context: .
@@ -11,23 +13,11 @@ services:
     volumes:
       - ./uniqreo/tmp_input:/app/tmp_input
       - ./uniqreo/tmp_output:/app/tmp_output
+      - ./uniqreo/data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # 2. Telegram Redirect & Follow-up Bot
-  tg_redirect_bot:
-    build:
-      context: ./telegram-redirect-bot
-      dockerfile: Dockerfile
-    container_name: tg_redirect_bot
-    command: python bot.py
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./telegram-redirect-bot/data:/app/data
-
-  # 3. WhatsApp Redirect & Follow-up Bot
+  # 2. WhatsApp Redirect & Follow-up Bot
   wa_redirect_bot:
     build:
       context: ./whatsapp-redirect-bot
@@ -40,7 +30,7 @@ services:
     volumes:
       - ./whatsapp-redirect-bot/data:/app/data
 
-  # 4. FastAPI S2S Postback Receiver
+  # 3. FastAPI S2S Postback Receiver
   s2s_server:
     build:
       context: ./s2s-postback-server
