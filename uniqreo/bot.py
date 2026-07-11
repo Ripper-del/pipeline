@@ -7,8 +7,8 @@ import sys
 import tempfile
 import time
 import httpx
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from pyrogram import Client, idle
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from pyrogram.errors import UserIsBlocked
 from core.config import (
     API_ID, API_HASH, BOT_TOKEN, SOURCE_THREAD_ID, TARGET_THREAD_ID,
@@ -26,11 +26,69 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
+    # In this deployment's network, pyrogram's direct MTProto connection sends
+    # fine but never receives push updates - reproduced across three separate
+    # bot accounts (including a brand-new one) and confirmed via raw Bot API
+    # getUpdates showing messages queued that pyrogram's dispatcher never saw.
+    # The classic Bot API's getUpdates, by contrast, delivered every single
+    # test message without fail throughout debugging - its stateless
+    # request/response model tolerates our flaky Docker/host network far
+    # better than a long-lived MTProto push socket does. So incoming messages
+    # are fetched via get_updates_loop()/dispatch_update() below instead of
+    # pyrogram's own update mechanism; `app` is only used for *sending*
+    # (send_message/send_document/download_media), which works fine over
+    # MTProto either way. no_updates=True stops pyrogram from wastefully
+    # trying (and failing) to receive on its own.
+    no_updates=True,
 )
 
 # limits the amount of simultaneous renders/uploads
 semaphore = asyncio.Semaphore(3)
 upload_semaphore = asyncio.Semaphore(2)
+
+# Pyrogram's download/send_document calls have no built-in timeout and can
+# hang indefinitely on a stalled connection instead of raising - observed
+# directly on this deployment's flaky network. Bounding them means a stuck
+# transfer fails cleanly (releasing its semaphore slot) instead of wedging
+# that slot forever and eventually starving every future upload/render.
+MEDIA_TRANSFER_TIMEOUT = 180
+
+
+async def _with_hard_timeout(coro, timeout):
+    """Bounds `coro` to `timeout` seconds without waiting for its cancellation
+    to finish gracefully. Plain asyncio.wait_for isn't enough here: pyrogram's
+    chunked file upload (save_file) spawns background worker tasks, and on
+    Python 3.11+ wait_for blocks until a cancelled task's own finally-block
+    cleanup completes - but that cleanup itself can hang on this deployment's
+    flaky network (e.g. waiting on a queue a stuck worker never drains),
+    which silently defeats the timeout entirely. Firing the cancellation and
+    moving on immediately, instead of awaiting it, avoids that trap."""
+    task = asyncio.ensure_future(coro)
+    done, pending = await asyncio.wait({task}, timeout=timeout)
+    if task in pending:
+        task.cancel()
+        raise asyncio.TimeoutError(f"Operation exceeded {timeout}s")
+    return task.result()
+
+
+MEDIA_TRANSFER_ATTEMPTS = 3
+
+
+async def _with_retries(coro_factory, timeout, attempts=MEDIA_TRANSFER_ATTEMPTS, description="transfer"):
+    """Retries a media transfer up to `attempts` times, each bounded by
+    _with_hard_timeout. The network here is flaky enough that a single
+    stalled attempt doesn't mean the transfer can never succeed - `coro_factory`
+    must be a zero-arg callable returning a *fresh* coroutine each call, since
+    a coroutine object can only be awaited once."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _with_hard_timeout(coro_factory(), timeout)
+        except Exception as e:
+            last_error = e
+            logger.warning(f"{description}: attempt {attempt}/{attempts} failed: {e}")
+    raise last_error
+
 
 DB_DIR = os.getenv("DATA_DIR", "data")
 DB_FILE = os.path.join(DB_DIR, "followups.db")
@@ -169,6 +227,134 @@ running_jobs = {}
 pending_uploads = {}
 
 # --- End of control panel section ---
+
+# --- Bot API long-polling (see the no_updates=True comment on `app` above for why) ---
+
+
+class _Peer:
+    __slots__ = ("id", "username")
+
+    def __init__(self, data):
+        self.id = data["id"]
+        self.username = data.get("username")
+
+
+class IncomingMessage:
+    """Adapter over a raw Bot API message dict, exposing just the subset of
+    pyrogram.types.Message's interface our handlers use (chat/from_user/text/
+    photo/video/caption/reply_to_message, plus reply_text()/download()).
+    `app` (a real pyrogram Client) still does the actual sending/downloading -
+    this class only stands in for the *receiving* side."""
+
+    def __init__(self, data):
+        self.message_id = data["message_id"]
+        self.chat = _Peer(data["chat"])
+        self.chat_type = data["chat"].get("type")
+        self.message_thread_id = data.get("message_thread_id")
+        self.text = data.get("text")
+        self.caption = data.get("caption")
+        self.video = data.get("video")
+        self.photo = data.get("photo")
+        from_user = data.get("from")
+        self.from_user = _Peer(from_user) if from_user else None
+        reply = data.get("reply_to_message")
+        self.reply_to_message = IncomingMessage(reply) if reply else None
+
+    async def reply_text(self, text, **kwargs):
+        return await app.send_message(
+            chat_id=self.chat.id,
+            text=text,
+            message_thread_id=self.message_thread_id,
+            reply_to_message_id=self.message_id,
+            **kwargs,
+        )
+
+    async def download(self, file_name=None):
+        if self.video:
+            file_id = self.video["file_id"]
+        elif self.photo:
+            file_id = self.photo[-1]["file_id"]
+        else:
+            raise ValueError("Message has no video or photo to download")
+        result = await app.download_media(file_id, file_name=file_name)
+        if not result:
+            # pyrogram sometimes swallows an internal error (e.g. a media-DC
+            # session auth failure) and just logs it instead of raising, so
+            # download_media silently returns None on failure - turn that
+            # into a real exception so _with_retries actually retries it.
+            raise RuntimeError("download_media returned no file (pyrogram logged an internal error, see logs above)")
+        return result
+
+
+def _command_name(text):
+    """Extracts a lowercased command name from message text ("/upload@bot arg"
+    -> "upload"), or None if the text isn't a command."""
+    if not text or not text.startswith("/"):
+        return None
+    first_word = text.split(maxsplit=1)[0][1:]
+    return first_word.split("@")[0].lower() or None
+
+
+async def dispatch_update(update):
+    """Routes one raw Bot API update to the matching handler. Replaces
+    pyrogram's own filter-based dispatch (see `app = Client(...)` above) with
+    explicit, mutually-exclusive branches - simpler than fighting pyrogram's
+    implicit handler-group propagation rules, and there's no risk of one
+    handler silently swallowing an update meant for another."""
+    raw = update.get("message")
+    if not raw:
+        return
+    try:
+        message = IncomingMessage(raw)
+        command = _command_name(message.text)
+        is_group = message.chat_type in ("group", "supergroup")
+
+        if command == "start":
+            if message.chat_type == "private":
+                await start_handler(message)
+        elif command == "upload":
+            await upload_handler(message)
+        elif command == "addprofile":
+            await addprofile_handler(message)
+        elif command == "removeprofile":
+            await removeprofile_handler(message)
+        elif command == "myprofiles":
+            await myprofiles_handler(message)
+        elif command:
+            pass  # unrecognized command - ignore, matches main_handler's old behavior
+        elif is_group and message.video and UPLOAD_THREAD_ID_INT is not None \
+                and message.message_thread_id == UPLOAD_THREAD_ID_INT:
+            await upload_thread_video_handler(message)
+        elif is_group and message.text and route_button_press(message.text, message.message_thread_id, BUTTON_MAP):
+            await button_handler(message)
+        else:
+            await main_handler(message)
+    except Exception as e:
+        logger.error(f"Error dispatching update {update.get('update_id')}: {e}")
+
+
+async def get_updates_loop():
+    """Long-polls the classic Bot API for new messages and feeds them to
+    dispatch_update. See the no_updates=True comment above `app = Client(...)`
+    for why this exists instead of pyrogram's own update delivery."""
+    offset = 0
+    async with httpx.AsyncClient(timeout=40) as http_client:
+        logger.info("get_updates_loop started (Bot API long-polling).")
+        while True:
+            try:
+                resp = await http_client.get(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+                    params={"offset": offset, "timeout": 30},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                for update in payload.get("result", []):
+                    offset = update["update_id"] + 1
+                    asyncio.create_task(dispatch_update(update))
+            except Exception as e:
+                logger.error(f"getUpdates polling error: {e}")
+                await asyncio.sleep(5)
+
 
 def init_db():
     """Initializes SQLite database schema for storing scheduled follow-up messages,
@@ -338,7 +524,7 @@ async def followup_poller(client: Client):
 
         await asyncio.sleep(60)
 
-async def process_and_upload(client: Client, cmd_msg: Message, video_msg: Message, profile_id: str, caption: str):
+async def process_and_upload(cmd_msg: "IncomingMessage", video_msg: "IncomingMessage", profile_id: str, caption: str):
     """Downloads, uniqueizes, and uploads the video in the background under semaphore limit."""
     async with upload_semaphore:
         task_dir_in = ""
@@ -355,7 +541,10 @@ async def process_and_upload(client: Client, cmd_msg: Message, video_msg: Messag
             task_dir_out = tempfile.mkdtemp(dir="tmp_output")
 
             # Download file
-            input_path = await video_msg.download(file_name=f"{task_dir_in}/")
+            input_path = await _with_retries(
+                lambda: video_msg.download(file_name=f"{task_dir_in}/"), MEDIA_TRANSFER_TIMEOUT,
+                description="upload download",
+            )
             filename = os.path.basename(input_path)
             output_path = f"{task_dir_out}/unique_{filename}"
 
@@ -390,8 +579,7 @@ async def process_and_upload(client: Client, cmd_msg: Message, video_msg: Messag
                 shutil.rmtree(task_dir_out, ignore_errors=True)
 
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_handler(client: Client, message: Message):
+async def start_handler(message: "IncomingMessage"):
     tg_id = message.from_user.id
 
     # Собираем финальную ссылку: базовый урл + Telegram ID юзера в качестве метки
@@ -418,8 +606,7 @@ async def start_handler(client: Client, message: Message):
     await asyncio.to_thread(add_followups, message.chat.id, personal_link)
 
 
-@app.on_message(filters.command("upload"))
-async def upload_handler(client: Client, message: Message):
+async def upload_handler(message: "IncomingMessage"):
     """Handles the /upload command (triggered directly or as reply)."""
     # /upload drives a real AdsPower browser and posts live video to TikTok, so it
     # must be restricted to explicitly allow-listed operators, not any chat member.
@@ -448,11 +635,10 @@ async def upload_handler(client: Client, message: Message):
         return
 
     # Schedule background processing and upload
-    asyncio.create_task(process_and_upload(client, message, target_msg, profile_id, caption))
+    asyncio.create_task(process_and_upload(message, target_msg, profile_id, caption))
 
 
-@app.on_message(filters.command("addprofile"))
-async def addprofile_handler(client: Client, message: Message):
+async def addprofile_handler(message: "IncomingMessage"):
     """Binds an AdsPower profile id to the caller so the "🚀 Автозалив" button
     in the upload thread fans a dropped video out to it too."""
     caller_id = message.from_user.id if message.from_user else None
@@ -470,8 +656,7 @@ async def addprofile_handler(client: Client, message: Message):
     await message.reply_text(f"✅ Профиль `{profile_id}` привязан. Теперь он участвует в кнопке «{START_AUTOUPLOAD_BUTTON}».")
 
 
-@app.on_message(filters.command("removeprofile"))
-async def removeprofile_handler(client: Client, message: Message):
+async def removeprofile_handler(message: "IncomingMessage"):
     """Unbinds an AdsPower profile id from the caller."""
     caller_id = message.from_user.id if message.from_user else None
     if caller_id not in ADMIN_TELEGRAM_IDS:
@@ -488,8 +673,7 @@ async def removeprofile_handler(client: Client, message: Message):
     await message.reply_text(f"🗑 Профиль `{profile_id}` отвязан.")
 
 
-@app.on_message(filters.command("myprofiles"))
-async def myprofiles_handler(client: Client, message: Message):
+async def myprofiles_handler(message: "IncomingMessage"):
     """Lists AdsPower profile ids currently bound to the caller."""
     caller_id = message.from_user.id if message.from_user else None
     if caller_id not in ADMIN_TELEGRAM_IDS:
@@ -505,20 +689,11 @@ async def myprofiles_handler(client: Client, message: Message):
     await message.reply_text(f"📋 Ваши профили для автозалива:\n{listing}")
 
 
-def _is_upload_thread_message(_, __, message):
-    return UPLOAD_THREAD_ID_INT is not None and message.message_thread_id == UPLOAD_THREAD_ID_INT
-
-
-# The thread check has to live in the *filter*, not the handler body: pyrogram
-# stops propagation to the next handler once a matched handler's body finishes
-# running, even if that body decides to no-op. A body-level early-return here
-# would silently swallow every video in every group thread (including
-# SOURCE_THREAD_ID's uniqueization pipeline) before main_handler ever saw it.
-@app.on_message(filters.video & filters.group & filters.create(_is_upload_thread_message))
-async def upload_thread_video_handler(client: Client, message: Message):
+async def upload_thread_video_handler(message: "IncomingMessage"):
     """Remembers the latest video an operator drops in the upload thread, so
     the "🚀 Автозалив" button (which can't itself carry a file) knows what to
-    upload once tapped."""
+    upload once tapped. dispatch_update() already only routes here for videos
+    in UPLOAD_THREAD_ID, so no thread check is needed in the body."""
     if LEAD_CHAT_ID and str(message.chat.id) != str(LEAD_CHAT_ID):
         return
 
@@ -530,7 +705,7 @@ async def upload_thread_video_handler(client: Client, message: Message):
     await message.reply_text(f"✅ Видео принято. Нажмите «{START_AUTOUPLOAD_BUTTON}», чтобы залить его на все привязанные профили.")
 
 
-async def handle_stats_button(message: Message):
+async def handle_stats_button(message: "IncomingMessage"):
     if not S2S_STATS_URL or not S2S_POSTBACK_SECRET:
         await message.reply_text("⚠️ S2S_STATS_URL или S2S_POSTBACK_SECRET не настроены в .env.")
         return
@@ -550,7 +725,7 @@ async def handle_stats_button(message: Message):
         await message.reply_text(f"⚠️ Ошибка запроса статистики: {e}")
 
 
-async def handle_start_job(message: Message, mode: str):
+async def handle_start_job(message: "IncomingMessage", mode: str):
     if not has_configured_profiles():
         await message.reply_text("⚠️ Не настроен ADSPOWER_PROFILE_ID(S) в .env - запускать нечего.")
         return
@@ -561,7 +736,7 @@ async def handle_start_job(message: Message, mode: str):
         await message.reply_text(f"⏳ {mode} уже запущен, дождитесь завершения или нажмите Стоп.")
 
 
-async def handle_stop_job(message: Message, mode: str):
+async def handle_stop_job(message: "IncomingMessage", mode: str):
     stopped = await stop_job(running_jobs, mode)
     if stopped:
         await message.reply_text(f"⏹ Остановлено: {mode}.")
@@ -569,7 +744,7 @@ async def handle_stop_job(message: Message, mode: str):
         await message.reply_text(f"ℹ️ Сейчас {mode} не запущен.")
 
 
-async def handle_start_autoupload(client: Client, message: Message):
+async def handle_start_autoupload(message: "IncomingMessage"):
     """Fans the caller's last dropped video out to every AdsPower profile
     they've bound via /addprofile, one process_and_upload task per profile
     (queued behind the same upload_semaphore as manual /upload calls)."""
@@ -591,11 +766,10 @@ async def handle_start_autoupload(client: Client, message: Message):
     caption = video_message.caption or "#dating #datingadvice"
     await message.reply_text(f"🚀 Запускаю автозалив на {len(profiles)} профил(ей): {', '.join(profiles)}")
     for profile_id in profiles:
-        asyncio.create_task(process_and_upload(client, message, video_message, profile_id, caption))
+        asyncio.create_task(process_and_upload(message, video_message, profile_id, caption))
 
 
-@app.on_message(filters.text & filters.group)
-async def button_handler(client: Client, message: Message):
+async def button_handler(message: "IncomingMessage"):
     if LEAD_CHAT_ID and str(message.chat.id) != str(LEAD_CHAT_ID):
         return
 
@@ -614,17 +788,11 @@ async def button_handler(client: Client, message: Message):
     elif action == "stop_spy":
         await handle_stop_job(message, "spy")
     elif action == "start_autoupload":
-        await handle_start_autoupload(client, message)
+        await handle_start_autoupload(message)
 
 
-@app.on_message()
-async def main_handler(client: Client, message: Message):
+async def main_handler(message: "IncomingMessage"):
     """Main handler for automated message uniqueization forwarding."""
-    logger.info(
-        f"[main_handler] got update: chat_id={message.chat.id} thread_id={message.message_thread_id} "
-        f"photo={bool(message.photo)} video={bool(message.video)} text={message.text!r}"
-    )
-
     # listening mode
     if SOURCE_THREAD_ID == 0 or TARGET_THREAD_ID == 0:
         logger.info("==== MESSAGE CAUGHT ====")
@@ -633,10 +801,6 @@ async def main_handler(client: Client, message: Message):
         if message.from_user:
             logger.info(f"From user: {message.from_user.username}")
         logger.info("---------------------------------")
-        return
-
-    # Skip commands
-    if message.text and message.text.startswith("/"):
         return
 
     if message.message_thread_id != SOURCE_THREAD_ID:
@@ -663,7 +827,10 @@ async def main_handler(client: Client, message: Message):
             task_dir_out = tempfile.mkdtemp(dir="tmp_output")
 
             # downloading file
-            input_path = await message.download(file_name=f"{task_dir_in}/")
+            input_path = await _with_retries(
+                lambda: message.download(file_name=f"{task_dir_in}/"), MEDIA_TRANSFER_TIMEOUT,
+                description="uniqueization download",
+            )
             filename = os.path.basename(input_path)
             output_path = f"{task_dir_out}/unique_{filename}"
 
@@ -675,10 +842,14 @@ async def main_handler(client: Client, message: Message):
                 await process_video(input_path, output_path)
 
             # sending clear file
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=output_path,
-                message_thread_id=TARGET_THREAD_ID,
+            await _with_retries(
+                lambda: app.send_document(
+                    chat_id=message.chat.id,
+                    document=output_path,
+                    message_thread_id=TARGET_THREAD_ID,
+                ),
+                MEDIA_TRANSFER_TIMEOUT,
+                description="uniqueization upload",
             )
             logger.info("Successfully finished file rendering!!!")
         except Exception as e:
@@ -715,6 +886,7 @@ async def main():
     init_db()
     asyncio.create_task(followup_poller(app))
     asyncio.create_task(heartbeat_loop())
+    asyncio.create_task(get_updates_loop())
     await send_thread_keyboards()
     logger.info("Bot is loaded and waiting for traffic...")
     await idle()
