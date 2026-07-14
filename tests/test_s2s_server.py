@@ -155,3 +155,48 @@ def test_format_daily_report_contains_stats():
     assert "5" in text
     assert "12.50" in text
     assert "3.00" in text
+
+
+def test_stats_rejects_missing_or_wrong_secret(monkeypatch):
+    monkeypatch.setattr(server, "POSTBACK_SECRET", "correct-secret")
+    client = TestClient(server.app)
+
+    resp = client.get("/stats")
+    assert resp.status_code == 403
+
+    resp = client.get("/stats", params={"secret": "wrong"})
+    assert resp.status_code == 403
+
+
+def test_stats_returns_aggregated_leads_with_correct_secret(monkeypatch):
+    monkeypatch.setattr(server, "POSTBACK_SECRET", "correct-secret")
+    server.save_lead("111", 5.0, 0.0, True, "US", "Android", "push", "wifi", "AT&T")
+    server.save_lead("222", 0.0, 2.5, False, "DE", "iOS", "push", "4g", "T-Mobile")
+
+    client = TestClient(server.app)
+    resp = client.get("/stats", params={"secret": "correct-secret"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    assert body["charged_total"] == 5.0
+    assert body["hold_total"] == 2.5
+
+
+def test_stats_hours_window_excludes_old_leads(monkeypatch):
+    monkeypatch.setattr(server, "POSTBACK_SECRET", "correct-secret")
+    old_ts = int(time.time()) - 100_000
+    conn_db = server.DB_FILE
+    import sqlite3
+    conn = sqlite3.connect(conn_db)
+    conn.execute(
+        "INSERT INTO leads (click_id, payout, hold_payout, is_charged, country, os_sys, traffic_type, connection_type, carrier, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("old", 9.0, 0.0, 1, "US", "Android", "push", "wifi", "AT&T", old_ts),
+    )
+    conn.commit()
+    conn.close()
+
+    client = TestClient(server.app)
+    resp = client.get("/stats", params={"secret": "correct-secret", "hours": 1})
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 0

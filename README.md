@@ -1,256 +1,269 @@
-# Pipeline: Telegram & WhatsApp UBT Automation Suite
+# Pipeline: Telegram and WhatsApp UBT Automation Suite
 
 ![Tests](https://github.com/Ripper-del/pipeline/actions/workflows/tests.yml/badge.svg)
 
-Этот проект объединяет инструменты автоматизации трафика (UBT) для Telegram и WhatsApp, а также сервис уникализации медиафайлов.
+Traffic automation (UBT) tooling for Telegram and WhatsApp, plus a media uniqueization service for TikTok creatives.
 
-## Архитектура проекта
+## Architecture
 
-Проект состоит из пяти независимых сервисов, каждый в своей папке:
+Four independent services, each in its own directory:
 
-1. **uniqreo** — Telegram-бот для уникализации фото- и видеоматериалов (на базе Pillow и FFmpeg), с автозаливом уникализированных роликов в TikTok.
-2. **telegram-redirect-bot** — перенаправление Telegram-пользователей на смартлинк с отслеживанием по Telegram ID и SQLite-очередью дожимов (24ч/48ч).
-3. **whatsapp-redirect-bot** — аналогичный функционал для WhatsApp на базе Green-API.
-4. **s2s-postback-server** — FastAPI-сервер, принимающий постбэки от партнёрских программ (например, iMonetizeIt) и отправляющий уведомления о конверсиях в Telegram.
-5. **tiktok_scraper** — консольные утилиты для парсинга TikTok по ключевым словам, прогрева/спая аккаунтов и автозалива через AdsPower. Общий код для AdsPower/капчи/human-like ввода/Telegram-уведомлений вынесен в `tiktok_scraper/common/` и переиспользуется также в `uniqreo/uploader.py`.
+1. **uniqreo** - the project's only Telegram bot process (single `bot_token`; Telegram does not allow two processes to poll updates on the same token simultaneously). Handles photo/video uniqueization (Pillow and FFmpeg) with automatic TikTok upload, `/upload`, the `/start` lead funnel with smartlink redirection and a SQLite-backed 24h/48h follow-up queue, and the ops-group control panel (warmup/spy/stats/autoupload).
+2. **whatsapp-redirect-bot** - the equivalent lead funnel for WhatsApp via Green-API (a separate process, since it is not a Telegram client).
+3. **s2s-postback-server** - FastAPI server accepting postbacks from affiliate networks (e.g. iMonetizeIt) and forwarding conversion notifications to Telegram.
+4. **tiktok_scraper** - command-line utilities for TikTok keyword search, account warmup/spy, and AdsPower-driven upload. Shared AdsPower/captcha/human-input/Telegram-notification code lives in `tiktok_scraper/common/` and is reused by `uniqreo/uploader.py`.
 
-## Структура директорий
+## Directory structure
 
 ```
 pipeline/
-├── docker-compose.yml           # Конфигурация для запуска всей экосистемы в Docker
-├── requirements.txt             # Консолидированные зависимости проекта (для локального запуска без Docker)
-├── requirements-dev.txt         # + pytest, для запуска тестов
-├── conftest.py                  # Настройка sys.path для тестов (модули лежат в разных папках)
-├── .env.example                 # Шаблон конфигурации окружения
-├── .gitignore                   # Исключения для Git
-├── .dockerignore                # Исключения для Docker build-контекста (root-context нужен uniqreo)
-├── .github/workflows/tests.yml  # CI: pytest + py_compile на каждый push/PR
-├── tests/                       # Юнит-тесты (см. раздел «Тестирование»)
+├── docker-compose.yml           # Full-stack Docker Compose configuration
+├── requirements.txt             # Consolidated dependencies for local (non-Docker) runs
+├── requirements-dev.txt         # + pytest, for running the test suite
+├── conftest.py                  # sys.path setup for tests (modules live in separate directories)
+├── .env.example                 # Environment configuration template
+├── .gitignore
+├── .dockerignore                # Docker build-context excludes (root context is required by uniqreo)
+├── .github/workflows/tests.yml  # CI: pytest + py_compile on every push/PR
+├── tests/                       # Unit tests (see "Testing")
 │
-├── uniqreo/                     # Компонент уникализации медиа + автозалив в TikTok
-│   ├── bot.py                   # Бот уникализации с поддержкой автозалива
-│   ├── uploader.py              # Модуль автозалива (использует tiktok_scraper/common)
-│   ├── Dockerfile               # Собирается из корня репозитория (нужен доступ к tiktok_scraper/common)
-│   ├── requirements.txt         # Локальные зависимости uniqreo
-│   └── core/                    # Логика обработки изображений и видео
+├── uniqreo/                     # The project's only Telegram bot process
+│   ├── bot.py                   # Uniqueization, /upload, lead funnel, control panel
+│   ├── uploader.py              # TikTok upload module (uses tiktok_scraper/common)
+│   ├── Dockerfile               # Built from the repo root (needs access to tiktok_scraper/)
+│   ├── requirements.txt
+│   └── core/
 │       ├── config.py
 │       ├── photo_processor.py
 │       └── video_processor.py
 │
-├── tiktok_scraper/              # Парсинг и автоматизация TikTok
-│   ├── common/                  # Общий код: AdsPower, капча, human-typing, Telegram-уведомления
+├── tiktok_scraper/              # TikTok scraping and automation
+│   ├── common/                  # Shared AdsPower, captcha, human-typing, Telegram-notify code
 │   │   ├── adspower.py
 │   │   ├── captcha.py
 │   │   ├── human_input.py
 │   │   └── telegram_notify.py
-│   ├── scraper.py               # Консольный скрипт парсера
-│   ├── automator.py             # Скрипт прогрева и спая через AdsPower
-│   ├── uploader.py              # Скрипт автозалива через AdsPower (CLI)
-│   └── requirements.txt         # Локальные зависимости парсера и автоматизатора
+│   ├── scraper.py               # Search/profile scraper CLI
+│   ├── automator.py             # Warmup/spy via AdsPower (also launched as a subprocess by uniqreo/bot.py)
+│   ├── uploader.py              # AdsPower upload CLI
+│   └── requirements.txt
 │
-├── telegram-redirect-bot/       # Telegram редирект-бот
+├── whatsapp-redirect-bot/       # WhatsApp lead funnel (Green-API)
 │   ├── bot.py
 │   ├── Dockerfile
 │   └── requirements.txt
 │
-├── whatsapp-redirect-bot/       # WhatsApp редирект-бот (Green-API)
-│   ├── bot.py
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-└── s2s-postback-server/         # FastAPI сервер для S2S-постбэков
+└── s2s-postback-server/         # FastAPI S2S postback receiver
     ├── server.py
     ├── Dockerfile
     └── requirements.txt
 ```
 
-## Конфигурация окружения (.env)
-
-Перед запуском скопируйте шаблон `.env.example` в файл `.env` и заполните параметры:
+## Environment configuration (.env)
 
 ```bash
 cp .env.example .env
 ```
 
-### Основные параметры:
-* **API_ID** и **API_HASH**: Данные приложения Telegram, полученные на https://my.telegram.org. Используются обоими Telegram-ботами.
-* **BOT_TOKEN**: Токен Telegram-бота для уникализации медиа (uniqreo).
-* **SOURCE_THREAD_ID** и **TARGET_THREAD_ID**: ID топиков/чатов для автоматической пересылки медиафайлов на уникализацию.
-* **ADMIN_TELEGRAM_IDS**: Telegram user ID через запятую, кому разрешено запускать `/upload` (реальный автозалив в TikTok через AdsPower). По умолчанию пусто — команда отклоняется для всех, пока явно не настроено.
-* **REDIRECT_BOT_TOKEN**: Токен Telegram-бота для перенаправления трафика.
-* **SMARTLINK_URL**: Базовая ссылка (смартлинк) для перенаправления.
-* **S2S_POSTBACK_SECRET**: Общий секрет, который партнёрская сеть должна присылать как `?secret=...` на `/postback`. Без него сервер отклоняет все постбэки (403) — сгенерируйте случайное значение и добавьте его в URL постбэка в личном кабинете партнёрки.
-* **LEAD_CHAT_ID** и **LEAD_THREAD_ID**: Telegram Chat ID и Thread ID, куда S2S сервер будет отправлять уведомления о новых лидах и ежедневный отчёт.
-* **DAILY_REPORT_HOUR_UTC**: Час UTC (0-23), в который `s2s-postback-server` присылает сводку "лидов за сутки" (по умолчанию `21`).
-* **LOG_CHAT_ID**: ID группы Telegram для отправки логов автоматизации (если пустой, используется `LEAD_CHAT_ID`).
-* **WARMUP_THREAD_ID**: Thread ID в группе логов для трансляции прогрева аккаунтов.
-* **SPY_THREAD_ID**: Thread ID в группе логов для отчетов режима спая.
-* **UPLOAD_THREAD_ID**: Thread ID в группе логов для вывода процесса уникализации и автозалива креативов.
-* **GREEN_API_ID_INSTANCE** и **GREEN_API_TOKEN_INSTANCE**: Учетные данные инстанса Green-API для работы WhatsApp-бота.
-* **GREEN_API_URL**: URL-адрес API Green-API (по умолчанию https://api.green-api.com).
-* **ADSPOWER_API_URL**: URL-адрес локального API AdsPower (по умолчанию http://localhost:50325, в Docker контейнере резолвится как http://host.docker.internal:50325).
-* **ADSPOWER_PROFILE_ID** / **ADSPOWER_PROFILE_IDS**: ID одного профиля AdsPower для автоматизации, либо список через запятую для режима ротации (`ADSPOWER_PROFILE_IDS` приоритетнее).
+### Variables
 
-## Развертывание и запуск
+* `API_ID`, `API_HASH` - Telegram application credentials from https://my.telegram.org. Used by `uniqreo`, the project's only Telegram bot.
+* `REDIRECT_BOT_TOKEN` - the single Telegram bot token, used for uniqueization/`/upload`, the `/start` lead funnel, and the control panel. There is no separate redirect-bot token.
+* `SOURCE_THREAD_ID`, `TARGET_THREAD_ID` - forum thread IDs for automatic media uniqueization (raw creatives in, clean creatives out).
+* `ADMIN_TELEGRAM_IDS` - comma-separated Telegram user IDs allowed to run `/upload` (drives a real AdsPower browser). Empty by default; the command is rejected for everyone until explicitly configured.
+* `SMARTLINK_URL` - base redirect link.
+* `S2S_POSTBACK_SECRET` - shared secret the affiliate network must send as `?secret=...` on `/postback`. Without it the server rejects all postbacks with 403; generate a random value and add it to the postback URL in the affiliate dashboard.
+* `LEAD_CHAT_ID`, `LEAD_THREAD_ID` - chat/thread the S2S server posts lead notifications and the daily report to.
+* `DAILY_REPORT_HOUR_UTC` - UTC hour (0-23) at which `s2s-postback-server` posts the daily lead summary (default `21`).
+* `LOG_CHAT_ID` - chat for automation logs (falls back to `LEAD_CHAT_ID` if unset).
+* `WARMUP_THREAD_ID` - thread for warmup logs and control-panel buttons.
+* `SPY_THREAD_ID` - thread for spy-mode logs and control-panel buttons.
+* `UPLOAD_THREAD_ID` - thread for uniqueization/upload progress logs and the autoupload button.
+* `S2S_STATS_URL` - `s2s-postback-server` base URL for the "stats" control-panel button (`http://s2s_server:8000` in Docker Compose).
+* `DEFAULT_GEO` - default GEO for warmup/spy runs launched from the control panel (default `US`).
+* `GREEN_API_ID_INSTANCE`, `GREEN_API_TOKEN_INSTANCE` - Green-API instance credentials for the WhatsApp bot.
+* `GREEN_API_URL` - Green-API base URL (default `https://api.green-api.com`).
+* `ADSPOWER_API_URL` - local AdsPower API URL (default `http://localhost:50325`; resolves to `http://host.docker.internal:50325` inside a container).
+* `ADSPOWER_PROFILE_ID` / `ADSPOWER_PROFILE_IDS` - single AdsPower profile ID, or a comma-separated list for rotation mode (`ADSPOWER_PROFILE_IDS` takes priority).
 
-### Запуск через Docker Compose (Рекомендуется)
+## Running
 
-Все сервисы упакованы в Docker-контейнеры. Для сборки и запуска в фоновом режиме выполните:
+### Docker Compose (recommended)
 
 ```bash
 docker-compose up --build -d
 ```
 
-Команда запустит четыре контейнера:
-1. `uniqreo_bot`
-2. `tg_redirect_bot`
-3. `wa_redirect_bot`
-4. `s2s_fastapi` (доступен на порту 8000)
+Starts three containers:
 
-Для просмотра логов конкретного сервиса используйте:
+1. `uniqreo_bot` - the project's only Telegram bot (uniqueization, `/upload`, lead funnel, control panel)
+2. `wa_redirect_bot`
+3. `s2s_fastapi` (port 8000)
 
 ```bash
 docker-compose logs -f [service_name]
 ```
 
-### Локальный запуск (без Docker)
+### Local (without Docker)
 
-1. Установите системные зависимости (для работы `uniqreo` требуется установленный в системе `ffmpeg`).
-2. Создайте виртуальное окружение и установите зависимости:
+1. Install system dependencies (`ffmpeg` is required for `uniqreo`).
+2. Create a virtual environment and install dependencies:
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
-3. Запуск сервисов по отдельности:
-   * Бот уникализации: `uniqreo/uploader.py` импортирует общий пакет `tiktok_scraper/common`, поэтому при локальном запуске (не в Docker) нужно добавить `tiktok_scraper` в `PYTHONPATH`, чтобы `common` резолвился как обычный python-модуль:
-     ```bash
-     cd uniqreo && PYTHONPATH=../tiktok_scraper python bot.py
-     ```
-   * Telegram-бот редиректа:
-     ```bash
-     cd telegram-redirect-bot && python bot.py
-     ```
-   * WhatsApp-бот редиректа:
-     ```bash
-     cd whatsapp-redirect-bot && python bot.py
-     ```
-   * S2S-сервер:
-     ```bash
-     cd s2s-postback-server && uvicorn server:app --host 0.0.0.0 --port 8000
-     ```
-   * Парсер TikTok:
-     Перед первым запуском парсера необходимо установить браузерные бинарные файлы Playwright:
-     ```bash
-     playwright install chromium
-     ```
-     После этого утилиту можно запускать из консоли с параметрами:
-     ```bash
-     python tiktok_scraper/scraper.py -s "crypto" -d "bitcoin,earn" -c "info,interested" -l 10
-     ```
-     Либо скрапить видео конкретного профиля вместо поиска по запросу (`-s`/`--search` и `-p`/`--profile` взаимоисключающие, ровно один обязателен):
-     ```bash
-     python tiktok_scraper/scraper.py -p someusername -l 20
-     ```
-     Доступные параметры парсера:
-     - `-s` / `--search` — поисковый запрос в TikTok (взаимоисключим с `-p`).
-     - `-p` / `--profile` — юзернейм TikTok-профиля, чьи видео скрапить, без `@` (взаимоисключим с `-s`).
-     - `-d` / `--desc-keywords` (необязательный) — ключевые слова (через запятую) для фильтрации описаний видео.
-     - `-c` / `--comment-keywords` (необязательный) — ключевые слова (через запятую) для фильтрации комментариев.
-     - `-l` / `--limit` (по умолчанию 10) — максимальное количество видео для анализа.
-     - `-o` / `--output` (по умолчанию results.json) — путь к файлу результатов.
-     - `--headless` (по умолчанию включен) — запуск браузера с графическим интерфейсом (для дебага).
-     - `--resume` — пропустить видео, уже сохранённые в `--output` при прошлом запуске.
-     - `--proxy` — прокси для браузера, например `http://user:pass@host:port`.
-    * Автоматизация и прогрев TikTok (через AdsPower):
-      Перед запуском убедитесь, что приложение AdsPower запущено, и в его настройках активирован Local API (по умолчанию порт 50325).
-      
-      **Особенности автоматизатора:**
-      - **Человекоподобный скроллинг**: Перемещения мыши и прокрутка экрана рассчитываются по кубическому сплайну Безье (`ease_in_out`) с добавлением случайного микро-дрожания рук (синусоидальные колебания), что полностью маскирует бота под реального пользователя и защищает от поведенческих детекторов.
-      - **Поддержка 15 ГЕО/языков**: Встроенная база данных поддерживает US, UK, DE, FR, ES, IT, BR, NL, PL, TR, RO, JP, KR, VN, CA. Для каждого ГЕО прописаны целевые поисковые запросы по теме дейтинга/отношений и наборы casual-комментариев на локальном языке.
-      - **Очеловеченные комментарии**: Бот оставляет короткие, сленговые и естественные комментарии без смайликов, выбирая их случайным образом из встроенного словаря фраз на языке целевого ГЕО. Никаких внешних ИИ-сервисов не требуется.
-      
-      **Скрипт поддерживает два режима работы:**
-      1. **Прогрев аккаунта (`warmup`)**: Бот ищет контент по дейтинг-запросам, задерживается на просмотре видео для прогрева удержания (от 6 до 15 секунд), ставит лайки и комментирует. Это обучает алгоритм рекомендаций TikTok выдавать в ленту этого аккаунта исключительно тему дейтинга (Adult Dating).
-      2. **Режим Спая (`spy`)**: Бот мониторит ленту/поиск и ставит лайк/комментарий на каждое 5-е подходящее под тематику видео.
+3. Run services individually:
 
-      
-      Запуск автопрогрева (для ГЕО US):
-      ```bash
-      python tiktok_scraper/automator.py --mode warmup --geo US --profile-id "ВАШ_PROFILE_ID"
-      ```
-      
-      Запуск режима Спая (для ГЕО DE):
-      ```bash
-      python tiktok_scraper/automator.py --mode spy --geo DE --profile-id "ВАШ_PROFILE_ID"
-      ```
+   **Telegram bot** - `uniqreo/uploader.py` imports the shared `tiktok_scraper/common` package, so outside Docker `tiktok_scraper` must be on `PYTHONPATH`:
+   ```bash
+   cd uniqreo && PYTHONPATH=../tiktok_scraper python bot.py
+   ```
 
-      **Ротация нескольких профилей:** вместо ручного запуска процесса по одному разу на профиль можно передать список через `--profile-ids` (через запятую) — скрипт обработает их один за другим со случайной паузой между профилями (маскирует пакетную обработку под несколько независимых сессий). Если один профиль упал с ошибкой, обработка остальных продолжается; ненулевой exit-код будет только если упали вообще все:
-      ```bash
-      python tiktok_scraper/automator.py --mode warmup --geo US --profile-ids "profile1,profile2,profile3" --profile-delay-min 30 --profile-delay-max 90
-      ```
-      Список профилей можно также задать через `ADSPOWER_PROFILE_IDS` в `.env` (через запятую) вместо `--profile-ids`.
+   **WhatsApp bot**:
+   ```bash
+   cd whatsapp-redirect-bot && python bot.py
+   ```
 
-      Доступные параметры автоматизатора:
-      - `--mode` (обязательный) — режим работы: `warmup` или `spy`.
-      - `--profile-id` (необязательный) — один ID профиля AdsPower. Если не указан, берётся из `.env` (`ADSPOWER_PROFILE_ID`) или запускается локальный Chromium.
-      - `--profile-ids` (необязательный) — список ID профилей через запятую для последовательной обработки (режим ротации); приоритетнее `--profile-id`.
-      - `--profile-delay-min` / `--profile-delay-max` (по умолчанию 30/90) — диапазон случайной паузы (сек) между профилями в режиме ротации.
-      - `--geo` (по умолчанию US) — целевое ГЕО из 15 доступных (US, UK, DE, FR, ES, IT, BR, NL, PL, TR, RO, JP, KR, VN, CA).
-      - `--limit` (по умолчанию 15) — лимит видео для обработки.
-      - `--api-url` (по умолчанию http://localhost:50325) — адрес локального API AdsPower.
-      - `--headless` — запуск локального браузера в фоновом режиме (если не используется AdsPower).
-    * Автоматический залив креативов (через Telegram-бота):
-      Для залива видео в профиль AdsPower отправьте команду `/upload <profile_id> [описание]` в чат с ботом уникализации.
-      Команду можно указать в качестве подписи к видео или отправить в ответ (reply) на видеосообщение.
-      Бот автоматически скачает видео, уникализирует его, запустит указанный профиль AdsPower на хосте (без лишней нагрузки, используя CDP-протокол соединения) и загрузит видео в TikTok с имитацией ввода текста.
-      Семафор ограничивает количество одновременных загрузок до 2 параллельных сессий.
-      **Команда доступна только пользователям из `ADMIN_TELEGRAM_IDS`** — она запускает реальный браузер и постит live-видео в TikTok, поэтому по умолчанию (пустой список) недоступна никому.
+   **S2S server**:
+   ```bash
+   cd s2s-postback-server && uvicorn server:app --host 0.0.0.0 --port 8000
+   ```
 
-      Команду автозалива также можно запустить вручную из терминала:
-      ```bash
-      python tiktok_scraper/uploader.py --video "путь/к/видео.mp4" --profile-id "ID_профиля" --caption "Ваше описание и хэштеги"
-      ```
+   **TikTok scraper** - install Playwright's browser binary once:
+   ```bash
+   playwright install chromium
+   ```
+   Search mode:
+   ```bash
+   python tiktok_scraper/scraper.py -s "crypto" -d "bitcoin,earn" -c "info,interested" -l 10
+   ```
+   Profile mode (`-s`/`--search` and `-p`/`--profile` are mutually exclusive, exactly one required):
+   ```bash
+   python tiktok_scraper/scraper.py -p someusername -l 20
+   ```
+   Parameters:
+   - `-s` / `--search` - search query (mutually exclusive with `-p`).
+   - `-p` / `--profile` - TikTok username to scrape, without `@` (mutually exclusive with `-s`).
+   - `-d` / `--desc-keywords` - comma-separated keywords to filter video descriptions.
+   - `-c` / `--comment-keywords` - comma-separated keywords to filter comments.
+   - `-l` / `--limit` (default 10) - max videos to analyze.
+   - `-o` / `--output` (default `results.json`).
+   - `--headless` (default on) - run the browser without a UI.
+   - `--resume` - skip videos already present in `--output` from a previous run.
+   - `--proxy` - browser proxy, e.g. `http://user:pass@host:port`.
 
-## Интеграция с Telegram (Логирование по веткам)
+   **TikTok warmup/spy automation (AdsPower)** - AdsPower must be running with its Local API enabled (default port 50325).
 
-Все отчеты и уведомления распределяются по разным топикам (веткам) вашей Telegram-группы для удобства мониторинга:
-- **Лиды и конверсии** (от S2S-сервера) отправляются в ветку `LEAD_THREAD_ID`.
-- **Логи прогрева аккаунтов** (режим warmup) пишутся в ветку `WARMUP_THREAD_ID`.
-- **Логи мониторинга спая** (режим spy) отправляются в ветку `SPY_THREAD_ID`.
-- **Логи автозалива** (успешный постинг, статус загрузки) транслируются в ветку `UPLOAD_THREAD_ID`.
+   Behavior notes:
+   - Mouse movement and scrolling follow a cubic Bezier curve (`ease_in_out`) with added micro-jitter, to avoid behavioral bot detection.
+   - 15 GEO/language profiles are built in (US, UK, DE, FR, ES, IT, BR, NL, PL, TR, RO, JP, KR, VN, CA), each with localized dating-niche search queries and casual comment phrasing.
+   - Comments are drawn from a local per-GEO phrase dictionary; no external AI service is used.
 
-## Персистентность лидов и ежедневный отчёт
+   Two modes:
+   1. `warmup` - searches dating-niche content, watches videos for 6-15s, likes and comments, to train TikTok's recommendation algorithm toward the dating/adult-dating niche.
+   2. `spy` - monitors the feed/search and likes/comments on every 5th matching video.
 
-`s2s-postback-server` сохраняет каждый принятый постбэк (после проверки `secret`) в SQLite (`data/leads.db`) — сумма, гео, статус (начислено/холд), время. Помимо мгновенного уведомления о каждой конверсии, раз в сутки в `LEAD_CHAT_ID`/`LEAD_THREAD_ID` уходит сводка за последние 24 часа (количество лидов, начислено, в холде) — отчёт отправляется каждый день, даже если лидов не было, что заодно служит подтверждением, что пайплайн жив. Время отправки настраивается через `DAILY_REPORT_HOUR_UTC` (час UTC, по умолчанию `21`).
+   ```bash
+   python tiktok_scraper/automator.py --mode warmup --geo US --profile-id "PROFILE_ID"
+   python tiktok_scraper/automator.py --mode spy --geo DE --profile-id "PROFILE_ID"
+   ```
 
-## Принципы работы дожим-воронки
+   Profile rotation - process a comma-separated list of profiles sequentially with a random delay between them (disguises batch processing as independent sessions). If one profile errors, the rest continue; a non-zero exit code only occurs if all profiles fail:
+   ```bash
+   python tiktok_scraper/automator.py --mode warmup --geo US --profile-ids "profile1,profile2,profile3" --profile-delay-min 30 --profile-delay-max 90
+   ```
+   The profile list can also be set via `ADSPOWER_PROFILE_IDS` in `.env` instead of `--profile-ids`.
 
-1. При первом контакте пользователя с Telegram- или WhatsApp-ботом генерируется индивидуальная ссылка формата `{SMARTLINK_URL}{user_id}`, где `{user_id}` — это Telegram ID или номер телефона WhatsApp.
-2. Бот отправляет приветственное сообщение с данной ссылкой.
-3. В фоновом режиме запускается задача дожима:
-   - Через 24 часа отправляется первое напоминание со ссылкой.
-   - Через 48 часов отправляется финальное напоминание со ссылкой.
-4. Отправка сообщений и логика дожима работают асинхронно и не блокируют прием новых сообщений.
+   Parameters:
+   - `--mode` (required) - `warmup` or `spy`.
+   - `--profile-id` - single AdsPower profile ID; falls back to `.env` (`ADSPOWER_PROFILE_ID`) or a local Chromium instance if unset.
+   - `--profile-ids` - comma-separated profile IDs for rotation mode; takes priority over `--profile-id`.
+   - `--profile-delay-min` / `--profile-delay-max` (default 30/90) - random inter-profile delay range in rotation mode.
+   - `--geo` (default `US`) - one of the 15 supported GEOs.
+   - `--limit` (default 15) - video processing limit.
+   - `--api-url` (default `http://localhost:50325`) - local AdsPower API URL.
+   - `--headless` - run a local (non-AdsPower) browser headless.
 
-## Версии зависимостей
+   **Automated creative upload (via the Telegram bot)** - send `/upload <profile_id> [caption]` to the bot, either as a video caption or as a reply to a video message. The bot downloads the video, uniqueizes it, launches the given AdsPower profile via CDP, and uploads to TikTok with simulated text entry. Concurrent uploads are capped at 2. Restricted to `ADMIN_TELEGRAM_IDS`; empty by default, so unreachable until configured.
 
-Все `requirements.txt` пинят версии (`~=` — патч-флексибельно, `playwright==` — жёстко). Playwright закреплён точно, потому что python-пакет должен совпадать по версии со скачанным браузерным бинарником — при обновлении версии playwright обязательно перезапустите `playwright install chromium`.
+   Manual CLI equivalent:
+   ```bash
+   python tiktok_scraper/uploader.py --video "path/to/video.mp4" --profile-id "PROFILE_ID" --caption "Caption and hashtags"
+   ```
 
-## Healthcheck и логирование
+   Multi-profile upload via one button - instead of running `/upload <profile_id>` once per profile, each `ADMIN_TELEGRAM_IDS` user can bind a list of AdsPower profiles to themselves and upload one video to all of them with a single tap of "Autoupload" in the `UPLOAD_THREAD_ID` thread (see "Control panel" below):
+   - `/addprofile <profile_id>` - bind a profile.
+   - `/removeprofile <profile_id>` - unbind a profile.
+   - `/myprofiles` - list bound profiles.
 
-- `s2s-postback-server` отдаёт `GET /health` (без побочных эффектов — не шлёт лид в Telegram) для Docker-healthcheck.
-- Остальные три бота (`uniqreo`, `telegram-redirect-bot`, `whatsapp-redirect-bot`) пишут heartbeat-файл каждые 30 секунд; если он не обновлялся дольше 90 секунд, `docker ps` покажет контейнер как `unhealthy` — это ловит зависший (но не упавший) процесс, который `restart: unless-stopped` сам по себе не заметит.
-- Все сервисы используют модуль `logging` вместо `print()` — вывод идёт с таймстампом и уровнем (`INFO`/`WARNING`/`ERROR`), удобно фильтровать через `docker-compose logs -f [service_name]`.
+   Bindings are stored per Telegram user ID in SQLite, so different operators in the same group see and upload to only their own profiles.
 
-## Тестирование
+## Telegram integration: per-thread logging
 
-Юнит-тесты (pytest) покрывают чистую логику без сети и браузера: парсинг ответов TikTok API, дедупликацию, детекцию капчи, human-typing, разбор `ADMIN_TELEGRAM_IDS`, эндпоинты `s2s-postback-server`.
+Reports and notifications are routed to separate forum threads:
+- Leads and conversions (from the S2S server) go to `LEAD_THREAD_ID`.
+- Warmup logs go to `WARMUP_THREAD_ID`.
+- Spy-mode logs go to `SPY_THREAD_ID`.
+- Upload logs go to `UPLOAD_THREAD_ID`.
+
+`WARMUP_THREAD_ID` and `SPY_THREAD_ID` may point at the same thread (the default in `.env.example`), putting both modes' logs and control buttons in one place. Set them to different values to split the two.
+
+## Lead persistence and daily report
+
+`s2s-postback-server` persists every accepted postback (after secret validation) to SQLite (`data/leads.db`) - amount, GEO, status (charged/held), timestamp. In addition to the per-conversion notification, a 24-hour summary (lead count, charged total, held total) is posted to `LEAD_CHAT_ID`/`LEAD_THREAD_ID` once a day, whether or not there were any leads - this also serves as a liveness signal for the pipeline. Report time is set via `DAILY_REPORT_HOUR_UTC` (UTC hour, default `21`).
+
+## Control panel (per-thread reply buttons)
+
+At startup, `uniqreo` sends a reply-keyboard to each configured ops-group thread. Reply keyboards are scoped to the thread they were sent in - forum topics are visually separate windows with separate compose areas.
+
+- `LEAD_THREAD_ID`: "Stats" - calls `/stats` on `s2s-postback-server` (same `S2S_POSTBACK_SECRET`, address in `S2S_STATS_URL`) for an on-demand summary.
+- `WARMUP_THREAD_ID`: "Start warmup" / "Stop warmup" - launches/terminates `automator.py --mode warmup` as a subprocess, using `.env` parameters (`ADSPOWER_PROFILE_IDS`/`ADSPOWER_PROFILE_ID`, `DEFAULT_GEO`). Progress is logged to the same thread by `automator.py` itself.
+- `SPY_THREAD_ID`: same, for `spy` mode.
+- `UPLOAD_THREAD_ID`: "Autoupload" - an operator drops a video in this thread (optionally with a caption in place of `[description]`), the bot confirms receipt, and the button uploads that video to every AdsPower profile the operator has bound via `/addprofile`. Bound profile management: `/addprofile <profile_id>`, `/removeprofile <profile_id>`, `/myprofiles`. Restricted to `ADMIN_TELEGRAM_IDS`, same as `/upload`; bindings are per-user.
+- `SOURCE_THREAD_ID`, `TARGET_THREAD_ID`: no buttons - these are media streams for automatic uniqueization, not command threads.
+
+If `WARMUP_THREAD_ID` and `SPY_THREAD_ID` point at the same thread, that thread gets one keyboard with all four buttons (two rows: warmup start/stop, spy start/stop) - `resolve_thread_button_map` in `uniqreo/bot.py` merges rows by thread ID instead of one overwriting the other.
+
+Pressing "Start" while a run is already active is a no-op (replies that it's already running); "Stop" with nothing active replies that there is nothing to stop.
+
+Known limitations:
+- Running-job state lives only in the `uniqreo` process's memory - a container restart loses track of an in-flight subprocess (the subprocess itself dies with the container).
+- Buttons launch runs with default `.env` parameters; there is no live GEO/profile selection dialog.
+- "Autoupload" likewise holds the last-dropped-video-per-user mapping only in memory - if the container restarts between sending the video and pressing the button, the video must be resent.
+
+## How message reception works
+
+`uniqreo/bot.py` uses `pyrofork` (a pyrogram fork) for outbound Telegram API calls - sending messages, documents, and downloading media all go over its MTProto connection. Incoming updates are handled differently: the `Client` is started with `no_updates=True`, and a separate loop (`get_updates_loop`/`dispatch_update` in `bot.py`) polls the classic Bot API's `getUpdates` endpoint directly and routes each message to the matching handler.
+
+This split exists because, in this deployment's network conditions, pyrogram's direct MTProto connection reliably sends but does not reliably receive push updates, while the classic Bot API's `getUpdates` - a stateless request/response call - tolerates connection instability far better than a long-lived push socket. `download`/`send_document` calls are wrapped with a hard timeout and automatic retry (`_with_hard_timeout`/`_with_retries` in `bot.py`), since a stalled transfer on this network can otherwise hang indefinitely rather than raising an error.
+
+## Follow-up funnel
+
+1. On first contact with the Telegram or WhatsApp bot, a personal link is generated: `{SMARTLINK_URL}{user_id}`, where `user_id` is the Telegram ID or WhatsApp phone number.
+2. The bot sends a welcome message containing that link.
+3. A follow-up task is scheduled in the background:
+   - First reminder after 24 hours.
+   - Final reminder after 48 hours.
+4. Follow-up delivery is asynchronous and does not block new message handling.
+
+## Dependency versions
+
+All `requirements.txt` files pin versions (`~=` for patch-level flexibility, `playwright==` exactly). Playwright is pinned exactly because the Python package version must match the downloaded browser binary - after upgrading playwright, re-run `playwright install chromium`.
+
+## Healthcheck and logging
+
+- `s2s-postback-server` exposes `GET /health` (no side effects, does not touch Telegram) for the Docker healthcheck.
+- The other two long-running services (`uniqreo`, `whatsapp-redirect-bot`) write a heartbeat file every 30 seconds; if it goes stale for more than 90 seconds, `docker ps` reports the container as `unhealthy` - this catches a hung (not crashed) process, which `restart: unless-stopped` alone would not notice.
+- All services use the `logging` module instead of `print()`, with timestamps and levels (`INFO`/`WARNING`/`ERROR`), filterable via `docker-compose logs -f [service_name]`.
+
+## Testing
+
+Unit tests (pytest) cover logic that does not require network or browser access: TikTok API response parsing, deduplication, captcha detection, human-typing, `ADMIN_TELEGRAM_IDS` parsing, `s2s-postback-server` endpoints, the `uniqreo` control panel and profile bindings.
 
 ```bash
 pip install -r requirements-dev.txt
 pytest -v
 ```
 
-CI (`.github/workflows/tests.yml`) гоняет тот же набор плюс `py_compile` по всем файлам при каждом push/PR в `main`/`dev`.
+CI (`.github/workflows/tests.yml`) runs the same suite plus `py_compile` across all files on every push/PR to `main`/`dev`.

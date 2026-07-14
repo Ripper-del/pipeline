@@ -3,6 +3,8 @@ allow-list that gates the /upload command). Uses importlib.reload since the
 parsing runs as module-level code driven by an env var."""
 import importlib
 
+import dotenv
+
 import core.config as config
 
 
@@ -11,6 +13,10 @@ def _reload_with_admin_ids(monkeypatch, value):
         monkeypatch.delenv("ADMIN_TELEGRAM_IDS", raising=False)
     else:
         monkeypatch.setenv("ADMIN_TELEGRAM_IDS", value)
+    # config.py calls load_dotenv() at import time, which would otherwise
+    # re-populate ADMIN_TELEGRAM_IDS from a real local .env file on reload
+    # and mask the "unset" case this test is exercising.
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **kw: False)
     importlib.reload(config)
     return config.ADMIN_TELEGRAM_IDS
 
